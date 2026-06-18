@@ -117,7 +117,7 @@ app.use(session({
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || '';
 const AUTH_REQUIRED = !!DASHBOARD_PASSWORD;
 const PUBLIC_PATHS = new Set([
-  '/login', '/logout',
+  '/healthz', '/login', '/logout',
   '/xero/connect', '/xero/callback', '/xero/webhook', '/twilio/reply',
 ]);
 function requireAuth(req, res, next) {
@@ -133,6 +133,9 @@ function requireAuth(req, res, next) {
 }
 app.use(requireAuth);
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Public health check for the host's uptime probe (no auth).
+app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 // ── Login ──────────────────────────────────────────────────────────────────
 app.get('/login', (req, res) => {
