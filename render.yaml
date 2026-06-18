@@ -36,6 +36,8 @@ services:
       - key: TWILIO_WHATSAPP_FROM
         value: whatsapp:+14155238886  # Twilio sandbox number
       # ── Secrets — set these in the Render dashboard (never commit them) ──
+      - key: DASHBOARD_PASSWORD
+        sync: false                   # REQUIRED in prod — gates the dashboard
       - key: GEMINI_API_KEY
         sync: false
       - key: XERO_CLIENT_ID

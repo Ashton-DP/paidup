@@ -1,8 +1,10 @@
-require('dotenv').config();
+const path = require('path');
+// Load .env relative to this file, not the process cwd — so the app works no
+// matter what directory it's launched from (preview tools, Render, cron, etc.).
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const express = require('express');
 const session = require('express-session');
 const cron = require('node-cron');
-const path = require('path');
 
 const db = require('./src/db');
 const { getAuthUrl, handleCallback, syncOverdueInvoices,
@@ -26,6 +28,42 @@ function activeTenant() {
   `).get();
 }
 
+function loginPage(error) {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PaidUp — Sign in</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    background:#0f0f13;color:#e8e8ec;min-height:100vh;display:flex;
+    align-items:center;justify-content:center}
+  .card{background:#18181f;border:1px solid #2a2a35;border-radius:12px;
+    padding:36px 32px;width:340px}
+  .logo{font-size:22px;font-weight:600;color:#fff;margin-bottom:6px}
+  .logo span{color:#6c8fff}
+  .sub{color:#888;font-size:13px;margin-bottom:24px}
+  label{display:block;font-size:12px;color:#888;margin-bottom:6px;
+    text-transform:uppercase;letter-spacing:.05em}
+  input{width:100%;background:#0f0f13;border:1px solid #2a2a35;border-radius:8px;
+    padding:11px 14px;color:#e8e8ec;font-size:14px;margin-bottom:16px}
+  input:focus{outline:none;border-color:#6c8fff}
+  button{width:100%;background:#6c8fff;color:#fff;border:none;border-radius:8px;
+    padding:12px;font-size:14px;font-weight:600;cursor:pointer}
+  button:hover{opacity:.9}
+  .err{background:#4a2020;color:#ffb3b3;border:1px solid #6b2737;border-radius:8px;
+    padding:9px 12px;font-size:12px;margin-bottom:16px}
+</style></head><body>
+  <form class="card" method="POST" action="/login">
+    <div class="logo">Paid<span>Up</span></div>
+    <div class="sub">Sign in to your dashboard</div>
+    ${error ? `<div class="err">Incorrect password. Try again.</div>` : ''}
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autofocus required>
+    <button type="submit">Sign in</button>
+  </form>
+</body></html>`;
+}
+
 const isProd = process.env.NODE_ENV === 'production';
 // Behind a hosting proxy (Render/Heroku/etc.) Express must trust it so secure
 // cookies and req.protocol work correctly.
@@ -33,7 +71,6 @@ if (isProd) app.set('trust proxy', 1);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname, 'public')));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
   resave: false,
@@ -45,6 +82,48 @@ app.use(session({
     maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
   },
 }));
+
+// ── Auth gate ────────────────────────────────────────────────────────────────
+// A password gate over the dashboard + API so a public deployment isn't wide
+// open. External callbacks (OAuth, webhooks) stay public — they validate
+// themselves. Enforced whenever DASHBOARD_PASSWORD is set; in production we
+// fail CLOSED if it's missing so data is never served unprotected.
+const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || '';
+const AUTH_REQUIRED = !!DASHBOARD_PASSWORD;
+const PUBLIC_PATHS = new Set([
+  '/login', '/logout',
+  '/xero/connect', '/xero/callback', '/xero/webhook', '/twilio/reply',
+]);
+function requireAuth(req, res, next) {
+  if (PUBLIC_PATHS.has(req.path)) return next();
+  if (!AUTH_REQUIRED) {
+    if (isProd) return res.status(503)
+      .send('Dashboard locked: set DASHBOARD_PASSWORD to enable access.');
+    return next(); // dev convenience when no password is configured
+  }
+  if (req.session && req.session.authed) return next();
+  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'auth required' });
+  return res.redirect('/login');
+}
+app.use(requireAuth);
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ── Login ──────────────────────────────────────────────────────────────────
+app.get('/login', (req, res) => {
+  if (!AUTH_REQUIRED || req.session?.authed) return res.redirect('/');
+  res.type('html').send(loginPage(!!req.query.error));
+});
+app.post('/login', (req, res) => {
+  if (AUTH_REQUIRED && req.body.password === DASHBOARD_PASSWORD) {
+    req.session.authed = true;
+    return res.redirect('/');
+  }
+  res.redirect('/login?error=1');
+});
+app.get('/logout', (req, res) => {
+  if (req.session) req.session.authed = false;
+  res.redirect('/login');
+});
 
 // ── Xero OAuth ─────────────────────────────────────────────────────────────
 

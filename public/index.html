@@ -308,7 +308,8 @@ function renderConnected(data) {
     ${data.paused
       ? `<button class="btn-success btn-sm" onclick="togglePause(false)">▶ Resume chasing</button>`
       : `<button class="btn-danger btn-sm" onclick="togglePause(true)">⏸ Pause chasing</button>
-         <button class="btn-primary btn-sm" id="btn-chase" onclick="chaseNow()">Chase now</button>`}`;
+         <button class="btn-primary btn-sm" id="btn-chase" onclick="chaseNow()">Chase now</button>`}
+    <a href="/logout" class="btn-ghost btn-sm" style="text-decoration:none;display:inline-flex;align-items:center">Sign out</a>`;
 
   const rows = invoices.length ? invoices.map(inv => `
     <tr>
