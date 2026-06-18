@@ -12,6 +12,8 @@ const { getAuthUrl, handleCallback, syncOverdueInvoices,
 const { runChaseAll, runChaseForTenant, handleReply } = require('./src/chaser');
 const { parseReplyIntent } = require('./src/whatsapp');
 const { isChasingPaused, setChasingPaused } = require('./src/safety');
+const { csvToInvoices } = require('./src/csv');
+const { daysOverdue } = require('./src/xeroUtils');
 
 const app = express();
 
@@ -26,6 +28,30 @@ function activeTenant() {
     ORDER BY COUNT(i.id) DESC, t.created_at DESC
     LIMIT 1
   `).get();
+}
+
+const genId = () => `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+// Manual / CSV invoices attach to the active org, or to a local "My Business"
+// tenant created on demand — so PaidUp is usable with no Xero connection.
+function targetTenantForManual() {
+  const existing = activeTenant();
+  if (existing) return existing;
+  const id = genId();
+  db.prepare(`INSERT INTO tenants (id, name, xero_tenant_id, tokens)
+              VALUES (?, 'My Business', ?, NULL)`).run(id, 'local-' + id);
+  return db.prepare(`SELECT * FROM tenants WHERE id = ?`).get(id);
+}
+
+function insertManualInvoice(tenantId, f) {
+  const over = f.due_date ? daysOverdue(f.due_date) : 0;
+  db.prepare(`INSERT INTO invoices
+    (id, tenant_id, xero_invoice_id, invoice_number, contact_name, contact_email,
+     contact_phone, amount_due, currency, due_date, days_overdue, status, chase_stage)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OVERDUE', 0)`).run(
+    genId(), tenantId, 'manual-' + genId(), f.invoice_number || null,
+    f.contact_name || 'Unknown', f.contact_email || null, f.contact_phone || null,
+    f.amount_due, (f.currency || 'ZAR').toUpperCase(), f.due_date, over);
 }
 
 function loginPage(error) {
@@ -243,6 +269,37 @@ app.post('/api/sync', async (req, res) => {
 
 app.post('/api/pause', (req, res) => {
   res.json({ paused: setChasingPaused(!!req.body.paused) });
+});
+
+// Add a single invoice manually (no Xero needed).
+app.post('/api/invoices/manual', (req, res) => {
+  const { contact_name, amount_due, due_date } = req.body;
+  const amount = parseFloat(amount_due);
+  if (!contact_name || !(amount > 0) || !due_date) {
+    return res.status(400).json({ error: 'Name, a positive amount, and a due date are required' });
+  }
+  const tenant = targetTenantForManual();
+  insertManualInvoice(tenant.id, {
+    contact_name,
+    contact_email: req.body.contact_email,
+    contact_phone: req.body.contact_phone,
+    invoice_number: req.body.invoice_number,
+    amount_due: amount,
+    currency: req.body.currency,
+    due_date,
+  });
+  res.json({ ok: true });
+});
+
+// Import overdue invoices from CSV text (Sage/QuickBooks/spreadsheet export).
+app.post('/api/invoices/import', (req, res) => {
+  const { invoices, skipped } = csvToInvoices(req.body.csv || '');
+  if (!invoices.length) {
+    return res.status(400).json({ error: 'No valid rows found (need name, amount, due date)', skipped });
+  }
+  const tenant = targetTenantForManual();
+  db.transaction(rows => rows.forEach(r => insertManualInvoice(tenant.id, r)))(invoices);
+  res.json({ imported: invoices.length, skipped });
 });
 
 app.post('/api/chase-now', async (req, res) => {

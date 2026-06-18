@@ -173,6 +173,31 @@
       font-weight: 500;
     }
 
+    .modal-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.6);
+      align-items: center; justify-content: center;
+      z-index: 200;
+    }
+    .modal {
+      background: #18181f; border: 1px solid #2a2a35; border-radius: 12px;
+      padding: 24px; width: 460px; max-width: 92vw;
+    }
+    .modal h3 { font-size: 16px; margin-bottom: 4px; color: #fff; }
+    .modal .hint { font-size: 12px; color: #777; margin-bottom: 18px; }
+    .modal .field { margin-bottom: 12px; }
+    .modal .row2 { display: flex; gap: 12px; }
+    .modal .row2 .field { flex: 1; }
+    .modal label { display: block; font-size: 11px; color: #888; margin-bottom: 5px;
+      text-transform: uppercase; letter-spacing: .04em; }
+    .modal input {
+      width: 100%; background: #0f0f13; border: 1px solid #2a2a35; border-radius: 7px;
+      padding: 9px 11px; color: #e8e8ec; font-size: 13px;
+    }
+    .modal input:focus { outline: none; border-color: #6c8fff; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+
     .toast {
       position: fixed;
       bottom: 24px;
@@ -203,6 +228,34 @@
 </main>
 
 <div class="toast" id="toast"></div>
+
+<div class="modal-overlay" id="add-modal">
+  <form class="modal" onsubmit="return submitManual(event)">
+    <h3>Add an overdue invoice</h3>
+    <div class="hint">For when you're not on Xero — chase it like any other invoice.</div>
+    <div class="field"><label>Client name *</label><input name="contact_name" required></div>
+    <div class="row2">
+      <div class="field"><label>Email</label><input name="contact_email" type="email"></div>
+      <div class="field"><label>Phone (WhatsApp)</label><input name="contact_phone"></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Invoice #</label><input name="invoice_number"></div>
+      <div class="field"><label>Currency</label><input name="currency" value="ZAR"></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Amount due *</label><input name="amount_due" type="number" step="0.01" min="0" required></div>
+      <div class="field"><label>Due date *</label><input name="due_date" type="date" required></div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn-ghost" onclick="closeAddForm()">Cancel</button>
+      <button type="submit" class="btn-primary">Add invoice</button>
+    </div>
+  </form>
+</div>
+
+<input type="file" id="csv-input" accept=".csv,text/csv" style="display:none"
+       onchange="handleCsvFile(this)">
+
 
 <script>
 let state = null;
@@ -300,11 +353,54 @@ async function togglePause(paused) {
   await load();
 }
 
+function openAddForm()  { document.getElementById('add-modal').style.display = 'flex'; }
+function closeAddForm() { document.getElementById('add-modal').style.display = 'none'; }
+
+async function submitManual(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await api('POST', '/api/invoices/manual', {
+      contact_name:   f.contact_name.value.trim(),
+      contact_email:  f.contact_email.value.trim(),
+      contact_phone:  f.contact_phone.value.trim(),
+      invoice_number: f.invoice_number.value.trim(),
+      amount_due:     f.amount_due.value,
+      currency:       f.currency.value.trim() || 'ZAR',
+      due_date:       f.due_date.value,
+    });
+    toast('Invoice added');
+    closeAddForm();
+    f.reset();
+    await load();
+  } catch (err) { toast(err.message, true); }
+  return false;
+}
+
+function triggerCsvImport() { document.getElementById('csv-input').click(); }
+
+async function handleCsvFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const text = await file.text();
+  input.value = '';
+  try {
+    const r = await api('POST', '/api/invoices/import', { csv: text });
+    toast(`Imported ${r.imported} invoice${r.imported !== 1 ? 's' : ''}` +
+          (r.skipped ? ` — ${r.skipped} row(s) skipped` : ''));
+    await load();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
 function renderConnected(data) {
   const { stats, invoices, recent, currency } = data;
 
   document.getElementById('header-actions').innerHTML = `
     <button class="btn-ghost btn-sm" id="btn-sync" onclick="syncInvoices()">Sync Xero</button>
+    <button class="btn-ghost btn-sm" onclick="openAddForm()">+ Add</button>
+    <button class="btn-ghost btn-sm" onclick="triggerCsvImport()">Import CSV</button>
     ${data.paused
       ? `<button class="btn-success btn-sm" onclick="togglePause(false)">▶ Resume chasing</button>`
       : `<button class="btn-danger btn-sm" onclick="togglePause(true)">⏸ Pause chasing</button>
@@ -380,13 +476,19 @@ function renderConnected(data) {
 }
 
 function renderDisconnected() {
-  document.getElementById('header-actions').innerHTML = '';
+  document.getElementById('header-actions').innerHTML =
+    `<a href="/logout" class="btn-ghost btn-sm" style="text-decoration:none;display:inline-flex;align-items:center">Sign out</a>`;
   document.getElementById('main').innerHTML = `
     <div class="connect-prompt">
       <h2>Connect your Xero account</h2>
       <p>PaidUp chases your overdue invoices automatically via WhatsApp and email<br>
          — so you get paid without the awkward follow-ups.</p>
       <a href="/xero/connect">Connect Xero →</a>
+      <div style="margin-top:30px;color:#777;font-size:13px">
+        No Xero? Works with Sage, QuickBooks or a spreadsheet too —
+        <button class="btn-ghost btn-sm" onclick="openAddForm()">+ Add invoice</button>
+        <button class="btn-ghost btn-sm" onclick="triggerCsvImport()">Import CSV</button>
+      </div>
     </div>`;
 }
 
