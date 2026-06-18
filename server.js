@@ -9,6 +9,7 @@ const { getAuthUrl, handleCallback, syncOverdueInvoices,
         validateWebhook, markPaid } = require('./src/xero');
 const { runChaseAll, runChaseForTenant, handleReply } = require('./src/chaser');
 const { parseReplyIntent } = require('./src/whatsapp');
+const { isChasingPaused, setChasingPaused } = require('./src/safety');
 
 const app = express();
 
@@ -138,7 +139,8 @@ app.get('/api/status', (req, res) => {
   `).get(tenant.id);
 
   res.json({ connected: true, tenant: tenant.name,
-             currency: curRow?.currency || 'ZAR', stats, invoices, recent });
+             currency: curRow?.currency || 'ZAR', paused: isChasingPaused(),
+             stats, invoices, recent });
 });
 
 app.get('/api/invoices', (req, res) => {
@@ -158,6 +160,10 @@ app.post('/api/sync', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.post('/api/pause', (req, res) => {
+  res.json({ paused: setChasingPaused(!!req.body.paused) });
 });
 
 app.post('/api/chase-now', async (req, res) => {

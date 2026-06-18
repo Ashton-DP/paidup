@@ -162,6 +162,17 @@
 
     .empty { text-align: center; padding: 40px; color: #555; font-size: 13px; }
 
+    .pause-banner {
+      background: #4a2020;
+      color: #ffb3b3;
+      border: 1px solid #6b2737;
+      border-radius: 10px;
+      padding: 12px 18px;
+      margin-bottom: 18px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
     .toast {
       position: fixed;
       bottom: 24px;
@@ -283,12 +294,21 @@ async function snooze(id) {
   await load();
 }
 
+async function togglePause(paused) {
+  await api('POST', '/api/pause', { paused });
+  toast(paused ? 'Chasing paused — no messages will send' : 'Chasing resumed');
+  await load();
+}
+
 function renderConnected(data) {
   const { stats, invoices, recent, currency } = data;
 
   document.getElementById('header-actions').innerHTML = `
     <button class="btn-ghost btn-sm" id="btn-sync" onclick="syncInvoices()">Sync Xero</button>
-    <button class="btn-primary btn-sm" id="btn-chase" onclick="chaseNow()">Chase now</button>`;
+    ${data.paused
+      ? `<button class="btn-success btn-sm" onclick="togglePause(false)">▶ Resume chasing</button>`
+      : `<button class="btn-danger btn-sm" onclick="togglePause(true)">⏸ Pause chasing</button>
+         <button class="btn-primary btn-sm" id="btn-chase" onclick="chaseNow()">Chase now</button>`}`;
 
   const rows = invoices.length ? invoices.map(inv => `
     <tr>
@@ -320,6 +340,7 @@ function renderConnected(data) {
     </div>`).join('') : `<div class="empty">No messages sent yet</div>`;
 
   document.getElementById('main').innerHTML = `
+    ${data.paused ? `<div class="pause-banner">⏸ Chasing is paused — no messages will be sent until you resume.</div>` : ''}
     <div class="stats-grid">
       <div class="stat-card highlight">
         <div class="label">Total overdue</div>

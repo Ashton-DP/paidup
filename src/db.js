@@ -61,6 +61,34 @@ db.exec(`
     processed    INTEGER DEFAULT 0,
     received_at  TEXT DEFAULT (datetime('now'))
   );
+
+  -- Opt-out list. Once a contact says STOP on a channel we never message that
+  -- channel again (POPIA / WhatsApp policy). identifier = email or phone key.
+  CREATE TABLE IF NOT EXISTS suppressions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id   TEXT NOT NULL,
+    channel     TEXT NOT NULL,
+    identifier  TEXT NOT NULL,
+    reason      TEXT,
+    created_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(tenant_id, channel, identifier)
+  );
+
+  -- Simple key/value store for app-wide settings (e.g. the chasing kill switch).
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+  );
 `);
+
+// ── Lightweight migrations (add columns to existing tables) ──────────────────
+function ensureColumn(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some(c => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+// A 'dispute' reply pauses chasing on the invoice until a human resolves it.
+ensureColumn('invoices', 'disputed', 'INTEGER DEFAULT 0');
 
 module.exports = db;

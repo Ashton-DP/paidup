@@ -13,11 +13,19 @@ const db = require('./db');
 const { generateChaseMessage, nextChaseStage } = require('./ai');
 const { sendChaseEmail } = require('./email');
 const { sendWhatsApp } = require('./whatsapp');
+const { phoneKey, emailKey, isSuppressed, isChasingPaused, addSuppression } = require('./safety');
 
 async function runChaseForTenant(tenantRow) {
+  // Global kill switch — halt all outbound chasing.
+  if (isChasingPaused()) {
+    console.log('[chaser] chasing is paused — skipping run');
+    return 0;
+  }
+
+  // Skip disputed invoices (a 'dispute' reply pauses them for human review).
   const invoices = db.prepare(`
     SELECT * FROM invoices
-    WHERE tenant_id = ? AND status = 'OVERDUE'
+    WHERE tenant_id = ? AND status = 'OVERDUE' AND COALESCE(disputed, 0) = 0
     ORDER BY days_overdue DESC
   `).all(tenantRow.id);
 
@@ -31,7 +39,8 @@ async function runChaseForTenant(tenantRow) {
 
     try {
       // ── Email ──────────────────────────────────────────────────────────
-      if (invoice.contact_email) {
+      if (invoice.contact_email &&
+          !isSuppressed(tenantRow.id, 'email', emailKey(invoice.contact_email))) {
         const emailMsg = await generateChaseMessage({
           invoice, stage, channel: 'email', senderName,
         });
@@ -47,7 +56,8 @@ async function runChaseForTenant(tenantRow) {
       }
 
       // ── WhatsApp ───────────────────────────────────────────────────────
-      if (invoice.contact_phone) {
+      if (invoice.contact_phone &&
+          !isSuppressed(tenantRow.id, 'whatsapp', phoneKey(invoice.contact_phone))) {
         const waMsg = await generateChaseMessage({
           invoice, stage, channel: 'whatsapp', senderName,
         });
@@ -92,24 +102,38 @@ async function runChaseAll() {
   }
 }
 
-// Handle a WhatsApp reply: snooze, mark paid, or flag dispute
+// Handle a WhatsApp reply: opt-out, snooze, mark paid, or flag dispute
 function handleReply({ tenantId, fromNumber, body, intent }) {
   db.prepare(`INSERT INTO replies (tenant_id, from_number, body, channel)
               VALUES (?, ?, ?, 'whatsapp')`).run(tenantId, fromNumber, body);
 
-  if (intent === 'paid') {
-    db.prepare(`UPDATE invoices SET status = 'PAID', paid_at = datetime('now')
-                WHERE tenant_id = ? AND contact_phone LIKE ?`)
-      .run(tenantId, `%${fromNumber.replace(/\D/g, '').slice(-9)}%`);
+  const key = phoneKey(fromNumber);
+  const match = key ? `%${key}%` : null;
+
+  if (intent === 'stop') {
+    // Opt-out: never message this number again, and pause its invoices.
+    addSuppression(tenantId, 'whatsapp', key, 'stop');
+    if (match) db.prepare(`UPDATE invoices SET disputed = 1, updated_at = datetime('now')
+                           WHERE tenant_id = ? AND contact_phone LIKE ?`).run(tenantId, match);
   }
 
-  if (intent === 'snooze') {
+  if (intent === 'paid' && match) {
+    db.prepare(`UPDATE invoices SET status = 'PAID', paid_at = datetime('now')
+                WHERE tenant_id = ? AND contact_phone LIKE ?`).run(tenantId, match);
+  }
+
+  if (intent === 'snooze' && match) {
     // snooze for 5 days — give client the benefit of the doubt
     db.prepare(`UPDATE invoices
                 SET snoozed_until = datetime('now', '+5 days'),
                     updated_at    = datetime('now')
-                WHERE tenant_id = ? AND contact_phone LIKE ?`)
-      .run(tenantId, `%${fromNumber.replace(/\D/g, '').slice(-9)}%`);
+                WHERE tenant_id = ? AND contact_phone LIKE ?`).run(tenantId, match);
+  }
+
+  if (intent === 'dispute' && match) {
+    // Pause chasing on the invoice(s) until a human resolves the dispute.
+    db.prepare(`UPDATE invoices SET disputed = 1, updated_at = datetime('now')
+                WHERE tenant_id = ? AND contact_phone LIKE ?`).run(tenantId, match);
   }
 }
 
