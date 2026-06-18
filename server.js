@@ -25,6 +25,11 @@ function activeTenant() {
   `).get();
 }
 
+const isProd = process.env.NODE_ENV === 'production';
+// Behind a hosting proxy (Render/Heroku/etc.) Express must trust it so secure
+// cookies and req.protocol work correctly.
+if (isProd) app.set('trust proxy', 1);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -32,6 +37,12 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
   resave: false,
   saveUninitialized: false,
+  cookie: {
+    secure: isProd,            // HTTPS-only cookie in production
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+  },
 }));
 
 // ── Xero OAuth ─────────────────────────────────────────────────────────────
@@ -119,7 +130,15 @@ app.get('/api/status', (req, res) => {
     WHERE cl.tenant_id = ? ORDER BY cl.sent_at DESC LIMIT 20
   `).all(tenant.id);
 
-  res.json({ connected: true, tenant: tenant.name, stats, invoices, recent });
+  // Most common currency among this org's overdue invoices, for stat totals.
+  const curRow = db.prepare(`
+    SELECT currency, COUNT(*) c FROM invoices
+    WHERE tenant_id = ? AND status = 'OVERDUE'
+    GROUP BY currency ORDER BY c DESC LIMIT 1
+  `).get(tenant.id);
+
+  res.json({ connected: true, tenant: tenant.name,
+             currency: curRow?.currency || 'ZAR', stats, invoices, recent });
 });
 
 app.get('/api/invoices', (req, res) => {

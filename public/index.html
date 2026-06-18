@@ -213,8 +213,12 @@ function toast(msg, isError = false) {
   setTimeout(() => el.classList.remove('show'), 3000);
 }
 
-function fmtZAR(n) {
-  return 'R ' + Number(n).toLocaleString('en-ZA', { minimumFractionDigits: 2 });
+function fmtMoney(n, currency = 'ZAR') {
+  try {
+    return new Intl.NumberFormat('en-ZA', { style: 'currency', currency }).format(Number(n));
+  } catch {
+    return (currency || '') + ' ' + Number(n).toLocaleString('en-ZA', { minimumFractionDigits: 2 });
+  }
 }
 
 function fmtTime(str) {
@@ -280,7 +284,7 @@ async function snooze(id) {
 }
 
 function renderConnected(data) {
-  const { stats, invoices, recent } = data;
+  const { stats, invoices, recent, currency } = data;
 
   document.getElementById('header-actions').innerHTML = `
     <button class="btn-ghost btn-sm" id="btn-sync" onclick="syncInvoices()">Sync Xero</button>
@@ -293,7 +297,7 @@ function renderConnected(data) {
         <div style="color:#555;font-size:11px;margin-top:2px">${inv.contact_email || ''}</div>
       </td>
       <td style="color:#888">${inv.invoice_number}</td>
-      <td class="amount">${fmtZAR(inv.amount_due)}</td>
+      <td class="amount">${fmtMoney(inv.amount_due, inv.currency)}</td>
       <td class="${overdueClass(inv.days_overdue)}">${inv.days_overdue}d</td>
       <td>${stageLabel(inv.chase_stage)}</td>
       <td>${inv.contact_phone ? '💬' : ''}${inv.contact_email ? ' ✉️' : ''}</td>
@@ -319,7 +323,7 @@ function renderConnected(data) {
     <div class="stats-grid">
       <div class="stat-card highlight">
         <div class="label">Total overdue</div>
-        <div class="value">${fmtZAR(stats.total_value)}</div>
+        <div class="value">${fmtMoney(stats.total_value, currency)}</div>
         <div class="sub">${stats.total_overdue} invoice${stats.total_overdue !== 1 ? 's' : ''}</div>
       </div>
       <div class="stat-card">
@@ -329,7 +333,7 @@ function renderConnected(data) {
       </div>
       <div class="stat-card">
         <div class="label">Recovered this session</div>
-        <div class="value">${fmtZAR(stats.recovered)}</div>
+        <div class="value">${fmtMoney(stats.recovered, currency)}</div>
         <div class="sub">${stats.paid_count} invoice${stats.paid_count !== 1 ? 's' : ''} paid</div>
       </div>
     </div>

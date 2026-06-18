@@ -1,0 +1,60 @@
+# PaidUp — Render deploy blueprint.
+#
+# To deploy:
+#   1. Push this repo to GitHub.
+#   2. Render → New → Blueprint → pick this repo (Render reads render.yaml).
+#   3. Fill in the secret env vars below (marked `sync: false`) in the Render UI
+#      — copy them from your local .env.
+#   4. After the first deploy you get a URL like https://paidup.onrender.com.
+#      Set BASE_URL and XERO_REDIRECT_URI to that URL (+ /xero/callback), and
+#      ADD that redirect URI in your Xero app config (developer.xero.com).
+#   5. Point your Xero webhook at https://<your-url>/xero/webhook and put the
+#      webhook signing key in XERO_WEBHOOK_KEY.
+#
+# NOTE ON DATA: the free plan has an ephemeral filesystem, so the SQLite DB
+# (data/chaser.db) resets on every deploy/restart. Fine for a demo. For real
+# production, either upgrade to a paid plan + a persistent disk mounted at
+# /opt/render/project/src/data, or migrate to a managed Postgres.
+
+services:
+  - type: web
+    name: paidup
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/status
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true          # Render generates a strong random secret
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: FROM_NAME
+        value: PaidUp
+      - key: TWILIO_WHATSAPP_FROM
+        value: whatsapp:+14155238886  # Twilio sandbox number
+      # ── Secrets — set these in the Render dashboard (never commit them) ──
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: XERO_CLIENT_ID
+        sync: false
+      - key: XERO_CLIENT_SECRET
+        sync: false
+      - key: XERO_REDIRECT_URI
+        sync: false                   # https://<your-url>/xero/callback
+      - key: XERO_WEBHOOK_KEY
+        sync: false
+      - key: BASE_URL
+        sync: false                   # https://<your-url>
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: FROM_EMAIL
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false

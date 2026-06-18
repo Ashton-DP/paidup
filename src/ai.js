@@ -72,13 +72,17 @@ const STAGES = {
   3: { label: 'final notice',     daysOverdue: 21 },
 };
 
-function formatZAR(amount) {
-  return `R${Number(amount).toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`;
+function formatMoney(amount, currency = 'ZAR') {
+  try {
+    return new Intl.NumberFormat('en-ZA', { style: 'currency', currency }).format(Number(amount));
+  } catch {
+    return `${currency || ''}${Number(amount).toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`;
+  }
 }
 
 async function generateChaseMessage({ invoice, stage, channel, senderName }) {
   const stageInfo = STAGES[stage];
-  const amountStr = formatZAR(invoice.amount_due);
+  const amountStr = formatMoney(invoice.amount_due, invoice.currency);
   const isWhatsApp = channel === 'whatsapp';
 
   const system = `You are an accounts receivable assistant for a South African business called "${senderName}".
