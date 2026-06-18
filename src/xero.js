@@ -5,7 +5,10 @@ const xero = new XeroClient({
   clientId: process.env.XERO_CLIENT_ID,
   clientSecret: process.env.XERO_CLIENT_SECRET,
   redirectUris: [process.env.XERO_REDIRECT_URI],
-  scopes: ['openid', 'profile', 'email', 'accounting.transactions.read',
+  // Xero granular scopes (apps created on/after 2 Mar 2026 cannot use the
+  // deprecated broad `accounting.transactions` scope). `accounting.invoices.read`
+  // is the granular replacement for reading invoices.
+  scopes: ['openid', 'profile', 'email', 'accounting.invoices.read',
            'accounting.contacts.read', 'offline_access'],
 });
 
@@ -37,25 +40,50 @@ async function getAuthUrl() {
 }
 
 async function handleCallback(url) {
-  const tokenSet = await xero.apiCallback(url);
-  await xero.updateTenants();
-  const tenant = xero.tenants[0];
-  const existing = db.prepare(`SELECT id FROM tenants WHERE xero_tenant_id = ?`)
-    .get(tenant.tenantId);
-
-  if (!existing) {
-    db.prepare(`INSERT INTO tenants (id, name, xero_tenant_id, tokens)
-                VALUES (?, ?, ?, ?)`)
-      .run(
-        `${Date.now()}_${Math.random().toString(36).slice(2)}`,
-        tenant.tenantName,
-        tenant.tenantId,
-        JSON.stringify(tokenSet)
-      );
-  } else {
-    saveTokens(tenant.tenantId, tokenSet);
+  let tokenSet;
+  try {
+    // Note: `url` carries the one-time OAuth `code` — never log it.
+    tokenSet = await xero.apiCallback(url);
+  } catch (e) {
+    console.error('[handleCallback] token exchange failed:', String(e),
+      '| body:', e && (e.body || e.response?.body || e.data));
+    throw e;
   }
-  return tenant;
+  try {
+    // `false` = skip the per-org Organisation API lookup, which needs
+    // accounting.settings.read. The /connections endpoint still returns
+    // tenantId + tenantName, which is all we use.
+    await xero.updateTenants(false);
+    console.log('[handleCallback] updateTenants OK, count =', (xero.tenants || []).length);
+  } catch (e) {
+    console.error('[handleCallback] updateTenants threw:', typeof e, '|', String(e));
+    console.error('[handleCallback] updateTenants err.body =', e && (e.body || e.response?.body));
+    throw e;
+  }
+  const tenants = xero.tenants || [];
+  if (!tenants.length) throw new Error('No Xero organisation was attached to this connection');
+
+  // A single auth can grant access to multiple orgs. Upsert them all — the
+  // same token set works for every connected org (the xero-tenant-id header
+  // selects which one we read).
+  for (const t of tenants) {
+    const existing = db.prepare(`SELECT id FROM tenants WHERE xero_tenant_id = ?`)
+      .get(t.tenantId);
+    if (!existing) {
+      db.prepare(`INSERT INTO tenants (id, name, xero_tenant_id, tokens)
+                  VALUES (?, ?, ?, ?)`)
+        .run(
+          `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          t.tenantName,
+          t.tenantId,
+          JSON.stringify(tokenSet)
+        );
+    } else {
+      saveTokens(t.tenantId, tokenSet);
+    }
+  }
+  console.log('[handleCallback] stored orgs:', tenants.map(t => t.tenantName).join(', '));
+  return tenants[0];
 }
 
 // ── Invoice sync ───────────────────────────────────────────────────────────
@@ -64,6 +92,50 @@ function daysOverdue(dueDateStr) {
   const due = new Date(dueDateStr);
   const now = new Date();
   return Math.max(0, Math.floor((now - due) / 86400000));
+}
+
+// Xero's xero-node SDK returns DueDate as a Date object on the invoice list,
+// but as an ISO string elsewhere — normalise to YYYY-MM-DD either way.
+function toDateOnly(d) {
+  if (!d) return null;
+  if (d instanceof Date) return d.toISOString().split('T')[0];
+  return String(d).split('T')[0];
+}
+
+// Build a usable phone string from a Xero contact's phones array (which stores
+// country/area/number separately). Prefer mobile, then default.
+function assemblePhone(phones) {
+  if (!phones || !phones.length) return null;
+  const withNum = phones.filter(p => p.phoneNumber && p.phoneNumber.trim());
+  if (!withNum.length) return null;
+  const pick = withNum.find(p => p.phoneType === 'MOBILE')
+            || withNum.find(p => p.phoneType === 'DEFAULT')
+            || withNum[0];
+  const cc  = (pick.phoneCountryCode || '').replace(/\D/g, '');
+  const ac  = (pick.phoneAreaCode || '').replace(/\D/g, '');
+  const num = (pick.phoneNumber || '').replace(/\D/g, '');
+  const raw = cc ? `+${cc}${ac}${num}` : `${ac}${num}`;
+  return raw || null;
+}
+
+// The invoice-LIST endpoint only returns a summary contact (id + name) — it
+// does NOT include email or phones. We must fetch the full contact record to
+// get the channels we chase on. Cached per-sync so each contact is fetched once.
+async function fetchContactDetails(client, xeroTenantId, contactId, cache) {
+  if (cache.has(contactId)) return cache.get(contactId);
+  let info = { email: null, phone: null };
+  try {
+    const r = await client.accountingApi.getContact(xeroTenantId, contactId);
+    const c = (r.body.contacts || [])[0];
+    if (c) {
+      info.email = c.emailAddress || null;
+      info.phone = assemblePhone(c.phones);
+    }
+  } catch (e) {
+    console.error('[xero] contact fetch failed for', contactId, '-', e.message || String(e));
+  }
+  cache.set(contactId, info);
+  return info;
 }
 
 async function syncOverdueInvoices(tenantRow) {
@@ -75,22 +147,21 @@ async function syncOverdueInvoices(tenantRow) {
     xeroTenantId,
     undefined,       // ifModifiedSince
     `Type=="ACCREC" AND Status=="AUTHORISED" AND DueDate<DateTime(${today.replace(/-/g, ',')})`,
-    undefined, undefined, undefined, undefined,
+    'DueDate ASC', undefined, undefined, undefined,
     ['AUTHORISED'],
     undefined, undefined, undefined,
     100
   );
 
   const invoices = response.body.invoices || [];
+  const contactCache = new Map();
   let synced = 0;
 
   for (const inv of invoices) {
-    if (!inv.contact?.emailAddress && !inv.contact?.phones?.length) continue;
-
-    const phone = inv.contact.phones?.find(p => p.phoneType === 'MOBILE')?.phoneNumber
-                || inv.contact.phones?.[0]?.phoneNumber || null;
-
-    const cleanPhone = phone ? phone.replace(/\s+/g, '').replace(/^0/, '+27') : null;
+    const contactId = inv.contact?.contactID;
+    const details = contactId
+      ? await fetchContactDetails(client, xeroTenantId, contactId, contactCache)
+      : { email: null, phone: null };
 
     db.prepare(`
       INSERT INTO invoices
@@ -99,20 +170,22 @@ async function syncOverdueInvoices(tenantRow) {
          days_overdue, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OVERDUE')
       ON CONFLICT(tenant_id, xero_invoice_id) DO UPDATE SET
-        days_overdue = excluded.days_overdue,
-        amount_due   = excluded.amount_due,
-        updated_at   = datetime('now')
+        days_overdue  = excluded.days_overdue,
+        amount_due    = excluded.amount_due,
+        contact_email = excluded.contact_email,
+        contact_phone = excluded.contact_phone,
+        updated_at    = datetime('now')
     `).run(
       `${Date.now()}_${Math.random().toString(36).slice(2)}`,
       tenantRow.id,
       inv.invoiceID,
       inv.invoiceNumber,
       inv.contact?.name || 'Unknown',
-      inv.contact?.emailAddress || null,
-      cleanPhone,
+      details.email,
+      details.phone,
       inv.amountDue,
       inv.currencyCode || 'ZAR',
-      inv.dueDate?.split('T')[0] || today,
+      toDateOnly(inv.dueDate) || today,
       daysOverdue(inv.dueDate)
     );
     synced++;

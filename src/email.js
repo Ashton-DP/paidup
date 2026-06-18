@@ -1,6 +1,23 @@
-const sgMail = require('@sendgrid/mail');
+const nodemailer = require('nodemailer');
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+// Gmail SMTP transport (App Password auth). Created lazily so a missing
+// credential only errors when we actually try to send, not on require.
+let _transport = null;
+function transport() {
+  if (_transport) return _transport;
+  const user = process.env.GMAIL_USER;
+  const pass = process.env.GMAIL_APP_PASSWORD;
+  if (!user || !pass) {
+    throw new Error('GMAIL_USER / GMAIL_APP_PASSWORD not set in .env');
+  }
+  _transport = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth: { user, pass },
+  });
+  return _transport;
+}
 
 // Split the AI-generated message into subject + body (email has "Subject: ..." line)
 function parseEmailMessage(raw) {
@@ -57,9 +74,11 @@ async function sendChaseEmail({ to, toName, rawMessage, invoiceNumber, senderNam
 </body>
 </html>`;
 
-  await sgMail.send({
-    to: { email: to, name: toName },
-    from: { email: process.env.FROM_EMAIL, name: process.env.FROM_NAME || senderName },
+  const fromName = process.env.FROM_NAME || senderName;
+  await transport().sendMail({
+    // Gmail SMTP sends as the authenticated account; display name can vary.
+    from: `"${fromName}" <${process.env.GMAIL_USER}>`,
+    to: toName ? `"${toName}" <${to}>` : to,
     subject,
     text: body,
     html,

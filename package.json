@@ -15,6 +15,7 @@
     "express": "^4.21.2",
     "express-session": "^1.18.1",
     "node-cron": "^3.0.3",
+    "nodemailer": "^9.0.1",
     "twilio": "^5.4.5",
     "xero-node": "^18.0.0"
   }

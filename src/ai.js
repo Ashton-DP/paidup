@@ -1,6 +1,69 @@
-const Anthropic = require('@anthropic-ai/sdk');
+// PaidUp uses Google's Gemini API (free tier) for chase-message generation.
+// Called over plain REST with Node's global fetch — no SDK dependency.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// Fallback chain: if the primary model is overloaded (503) or retired (404),
+// rotate to the next. `gemini-flash-latest` always points at a current model.
+const GEMINI_FALLBACKS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest'];
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function callGemini({ system, prompt, maxTokens = 600 }) {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) throw new Error('GEMINI_API_KEY not set in .env');
+
+  const models = [GEMINI_MODEL, ...GEMINI_FALLBACKS.filter(m => m !== GEMINI_MODEL)];
+  const MAX_ROUNDS = 3; // the free tier spikes — retry the whole rotation
+  let lastErr;
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    for (const model of models) {
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+            body: JSON.stringify({
+              systemInstruction: { parts: [{ text: system }] },
+              contents: [{ role: 'user', parts: [{ text: prompt }] }],
+              generationConfig: {
+                maxOutputTokens: maxTokens,
+                temperature: 0.7,
+                // Disable "thinking" — these are short messages; thinking would
+                // burn the output budget and can return empty text.
+                thinkingConfig: { thinkingBudget: 0 },
+              },
+            }),
+          }
+        );
+
+        if (!res.ok) {
+          const body = await res.text();
+          // 503 overloaded / 404 retired → try next model; anything else is fatal.
+          if (res.status === 503 || res.status === 404 || res.status === 429) {
+            lastErr = new Error(`Gemini ${model} ${res.status}: ${body.slice(0, 200)}`);
+            continue;
+          }
+          throw new Error(`Gemini ${res.status}: ${body.slice(0, 300)}`);
+        }
+
+        const data = await res.json();
+        const text = (data.candidates?.[0]?.content?.parts || [])
+          .map(p => p.text || '').join('').trim();
+        if (!text) {
+          lastErr = new Error(`Gemini ${model} returned no text (finish: ${data.candidates?.[0]?.finishReason})`);
+          continue;
+        }
+        return text;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    // Every model was busy this round — back off and try the rotation again.
+    if (round < MAX_ROUNDS - 1) await sleep(1500 * (round + 1));
+  }
+  throw lastErr || new Error('Gemini: all models failed');
+}
 
 // Stage definitions — determines tone and urgency
 const STAGES = {
@@ -42,19 +105,14 @@ ${stage === 2 ? '- Firm but still professional. Reference that this is a follow-
 ${stage === 3 ? '- Serious tone. Final notice. Mention that failure to pay may result in referral to a collections agency. Still professional — not threatening.' : ''}
 
 ${isWhatsApp
-  ? 'Format: plain text only, no markdown, no subject line, 3-5 sentences max. Start with "Hi [Name],"'
-  : 'Format: include Subject: line first, then blank line, then the email body. Sign off with the sender name.'}
+  ? `Format: plain text only, no markdown, no subject line, 3-5 sentences max. Greet the client by name — open with "Hi ${invoice.contact_name},".`
+  : `Format: include a Subject: line first, then a blank line, then the email body. Address the client as "${invoice.contact_name}". Sign off as "${senderName}".`}
+
+CRITICAL: Never output bracketed placeholders such as [Name], [Your Name], or [Company]. Use the real names provided above. The client is "${invoice.contact_name}" and you are writing on behalf of "${senderName}".
 
 Output only the message text — no explanation, no notes.`;
 
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 400,
-    messages: [{ role: 'user', content: prompt }],
-    system,
-  });
-
-  return response.content[0].text.trim();
+  return callGemini({ system, prompt, maxTokens: 600 });
 }
 
 // Determine which stage an invoice should be chased at, based on days overdue

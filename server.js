@@ -12,6 +12,19 @@ const { parseReplyIntent } = require('./src/whatsapp');
 
 const app = express();
 
+// Pick the org to show/operate on: the one with the most overdue invoices (so
+// the dashboard surfaces the org that actually has work), tie-broken by the
+// most recently connected. MVP assumes a single active tenant.
+function activeTenant() {
+  return db.prepare(`
+    SELECT t.* FROM tenants t
+    LEFT JOIN invoices i ON i.tenant_id = t.id AND i.status = 'OVERDUE'
+    GROUP BY t.id
+    ORDER BY COUNT(i.id) DESC, t.created_at DESC
+    LIMIT 1
+  `).get();
+}
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -34,7 +47,11 @@ app.get('/xero/callback', async (req, res) => {
     req.session.tenantId = tenant.tenantId;
     res.redirect('/?connected=1');
   } catch (err) {
-    console.error('[xero callback]', err.message);
+    console.error('[xero callback] FULL ERROR ↓');
+    console.error('  message :', err && err.message);
+    console.error('  name    :', err && err.name);
+    console.error('  body    :', err && (err.body || err.response?.body || err.data));
+    console.error('  stack   :', err && err.stack);
     res.redirect('/?error=xero_auth_failed');
   }
 });
@@ -78,7 +95,7 @@ app.post('/twilio/reply', (req, res) => {
 // ── Dashboard API ──────────────────────────────────────────────────────────
 
 app.get('/api/status', (req, res) => {
-  const tenant = db.prepare(`SELECT * FROM tenants`).get();
+  const tenant = activeTenant();
   if (!tenant) return res.json({ connected: false });
 
   const stats = db.prepare(`
@@ -106,7 +123,7 @@ app.get('/api/status', (req, res) => {
 });
 
 app.get('/api/invoices', (req, res) => {
-  const tenant = db.prepare(`SELECT * FROM tenants`).get();
+  const tenant = activeTenant();
   if (!tenant) return res.json([]);
   const rows = db.prepare(`SELECT * FROM invoices WHERE tenant_id = ?
                             ORDER BY days_overdue DESC`).all(tenant.id);
@@ -114,7 +131,7 @@ app.get('/api/invoices', (req, res) => {
 });
 
 app.post('/api/sync', async (req, res) => {
-  const tenant = db.prepare(`SELECT * FROM tenants`).get();
+  const tenant = activeTenant();
   if (!tenant) return res.status(400).json({ error: 'Not connected to Xero' });
   try {
     const count = await syncOverdueInvoices(tenant);
@@ -125,7 +142,7 @@ app.post('/api/sync', async (req, res) => {
 });
 
 app.post('/api/chase-now', async (req, res) => {
-  const tenant = db.prepare(`SELECT * FROM tenants`).get();
+  const tenant = activeTenant();
   if (!tenant) return res.status(400).json({ error: 'Not connected to Xero' });
   try {
     const count = await runChaseForTenant(tenant);

@@ -1,9 +1,18 @@
 const twilio = require('twilio');
 
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+// Lazily create the Twilio client so a missing/placeholder credential only
+// errors when we actually try to send, not on require (which would crash boot).
+let _client = null;
+function client() {
+  if (_client) return _client;
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  if (!sid || !token || sid.startsWith('ACplaceholder')) {
+    throw new Error('TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN not set in .env');
+  }
+  _client = twilio(sid, token);
+  return _client;
+}
 
 // Normalise a South African number to E.164 WhatsApp format
 function formatZANumber(raw) {
@@ -22,7 +31,7 @@ async function sendWhatsApp({ to, message, invoiceNumber }) {
     return false;
   }
 
-  await client.messages.create({
+  await client().messages.create({
     from: process.env.TWILIO_WHATSAPP_FROM,
     to: toFormatted,
     body: message,
