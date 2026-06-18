@@ -87,4 +87,4 @@ async function sendChaseEmail({ to, toName, rawMessage, invoiceNumber, senderNam
   console.log(`[email] sent stage message to ${to} re invoice ${invoiceNumber}`);
 }
 
-module.exports = { sendChaseEmail };
+module.exports = { sendChaseEmail, parseEmailMessage };

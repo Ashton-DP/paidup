@@ -140,4 +140,4 @@ function nextChaseStage(invoice) {
   return null;
 }
 
-module.exports = { generateChaseMessage, nextChaseStage, STAGES };
+module.exports = { generateChaseMessage, nextChaseStage, STAGES, formatMoney };
