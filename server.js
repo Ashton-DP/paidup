@@ -150,6 +150,7 @@ app.use(session({
 // landing page and external callbacks (OAuth, webhooks) stay public.
 const PUBLIC_PATHS = new Set([
   '/', '/index.html', '/healthz', '/login', '/signup', '/logout', '/api/waitlist',
+  '/robots.txt', '/sitemap.xml', '/favicon.svg', '/og.svg',
   '/xero/connect', '/xero/callback', '/xero/webhook', '/twilio/reply',
 ]);
 function requireAuth(req, res, next) {

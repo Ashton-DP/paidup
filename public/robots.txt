@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /app
+Disallow: /api/
+Disallow: /login
+Disallow: /signup
+
+Sitemap: https://paidup.co.za/sitemap.xml
