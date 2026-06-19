@@ -14,6 +14,7 @@ const { generateChaseMessage, nextChaseStage } = require('./ai');
 const { sendChaseEmail } = require('./email');
 const { sendWhatsApp } = require('./whatsapp');
 const { phoneKey, emailKey, isSuppressed, isChasingPaused, addSuppression } = require('./safety');
+const { getCadence, getAppSettings } = require('./settings');
 
 async function runChaseForTenant(tenantRow) {
   // Global kill switch — halt all outbound chasing.
@@ -29,13 +30,15 @@ async function runChaseForTenant(tenantRow) {
     ORDER BY days_overdue DESC
   `).all(tenantRow.id);
 
+  const cadence = getCadence();
+  const businessName = getAppSettings().business_name;
   let chased = 0;
 
   for (const invoice of invoices) {
-    const stage = nextChaseStage(invoice);
+    const stage = nextChaseStage(invoice, cadence);
     if (!stage) continue;
 
-    const senderName = tenantRow.name;
+    const senderName = businessName || tenantRow.name;
 
     try {
       // ── Email ──────────────────────────────────────────────────────────
@@ -142,14 +145,15 @@ function handleReply({ tenantId, fromNumber, body, intent }) {
 // The stage a manual chase should use: the natural next stage if due, else the
 // next stage up (capped at final) so the operator can always escalate by hand.
 function computeManualStage(invoice) {
-  return nextChaseStage(invoice) || Math.min((invoice.chase_stage || 0) + 1, 3) || 1;
+  return nextChaseStage(invoice, getCadence()) || Math.min((invoice.chase_stage || 0) + 1, 3) || 1;
 }
 
 function loadInvoiceWithSender(invoiceId) {
   const invoice = db.prepare(`SELECT * FROM invoices WHERE id = ?`).get(invoiceId);
   if (!invoice) throw new Error('Invoice not found');
   const tenant = db.prepare(`SELECT * FROM tenants WHERE id = ?`).get(invoice.tenant_id);
-  return { invoice, senderName: tenant?.name || 'PaidUp' };
+  const senderName = getAppSettings().business_name || tenant?.name || 'PaidUp';
+  return { invoice, senderName };
 }
 
 // Generate (but DO NOT send) the messages for one invoice, so the operator can

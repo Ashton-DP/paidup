@@ -13,6 +13,7 @@ const { runChaseAll, runChaseForTenant, handleReply,
         previewChase, sendChaseForInvoice } = require('./src/chaser');
 const { parseReplyIntent } = require('./src/whatsapp');
 const { isChasingPaused, setChasingPaused } = require('./src/safety');
+const { getAppSettings, setSetting, DEFAULTS } = require('./src/settings');
 const { csvToInvoices } = require('./src/csv');
 const { daysOverdue } = require('./src/xeroUtils');
 
@@ -287,6 +288,15 @@ app.post('/api/sync', async (req, res) => {
 
 app.post('/api/pause', (req, res) => {
   res.json({ paused: setChasingPaused(!!req.body.paused) });
+});
+
+// Business name + chase cadence settings.
+app.get('/api/settings', (req, res) => res.json(getAppSettings()));
+app.post('/api/settings', (req, res) => {
+  for (const k of Object.keys(DEFAULTS)) {
+    if (req.body[k] !== undefined) setSetting(k, req.body[k]);
+  }
+  res.json(getAppSettings());
 });
 
 // Add a single invoice manually (no Xero needed).

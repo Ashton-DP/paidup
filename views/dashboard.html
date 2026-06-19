@@ -268,6 +268,26 @@
   </form>
 </div>
 
+<div class="modal-overlay" id="settings-modal">
+  <form class="modal" onsubmit="return saveSettings(event)">
+    <h3>Settings</h3>
+    <div class="hint">Your business name signs every reminder. Cadence sets how many days overdue triggers each stage.</div>
+    <div class="field"><label>Business name</label><input name="business_name" placeholder="e.g. Karoo Coffee Co"></div>
+    <div class="row2">
+      <div class="field"><label>Stage 1 · friendly (days)</label><input name="stage1_days" type="number" min="0" required></div>
+      <div class="field"><label>Stage 2 · firm (days)</label><input name="stage2_days" type="number" min="0" required></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Stage 3 · final (days)</label><input name="stage3_days" type="number" min="0" required></div>
+      <div class="field"><label>Re-chase cooldown (days)</label><input name="cooldown_days" type="number" min="0" required></div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn-ghost" onclick="closeSettings()">Cancel</button>
+      <button type="submit" class="btn-primary">Save settings</button>
+    </div>
+  </form>
+</div>
+
 <div class="modal-overlay" id="chase-modal">
   <div class="modal">
     <h3>Preview &amp; send reminder</h3>
@@ -426,6 +446,37 @@ async function togglePause(paused) {
   await load();
 }
 
+async function openSettings() {
+  const m = document.getElementById('settings-modal');
+  m.style.display = 'flex';
+  try {
+    const s = await api('GET', '/api/settings');
+    const f = m.querySelector('form');
+    f.business_name.value = s.business_name || '';
+    f.stage1_days.value = s.stage1_days;
+    f.stage2_days.value = s.stage2_days;
+    f.stage3_days.value = s.stage3_days;
+    f.cooldown_days.value = s.cooldown_days;
+  } catch (e) { toast(e.message, true); }
+}
+function closeSettings() { document.getElementById('settings-modal').style.display = 'none'; }
+async function saveSettings(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await api('POST', '/api/settings', {
+      business_name: f.business_name.value.trim(),
+      stage1_days: f.stage1_days.value,
+      stage2_days: f.stage2_days.value,
+      stage3_days: f.stage3_days.value,
+      cooldown_days: f.cooldown_days.value,
+    });
+    toast('Settings saved');
+    closeSettings();
+  } catch (err) { toast(err.message, true); }
+  return false;
+}
+
 function openAddForm()  { document.getElementById('add-modal').style.display = 'flex'; }
 function closeAddForm() { document.getElementById('add-modal').style.display = 'none'; }
 
@@ -478,6 +529,7 @@ function renderConnected(data) {
       ? `<button class="btn-success btn-sm" onclick="togglePause(false)">▶ Resume chasing</button>`
       : `<button class="btn-danger btn-sm" onclick="togglePause(true)">⏸ Pause chasing</button>
          <button class="btn-primary btn-sm" id="btn-chase" onclick="chaseNow()">Chase now</button>`}
+    <button class="btn-ghost btn-sm" onclick="openSettings()">⚙ Settings</button>
     <a href="/logout" class="btn-ghost btn-sm" style="text-decoration:none;display:inline-flex;align-items:center">Sign out</a>`;
 
   const rows = invoices.length ? invoices.map(inv => `

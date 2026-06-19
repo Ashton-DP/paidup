@@ -53,3 +53,19 @@ test('snoozed into the future → null', () => {
 test('snooze in the past no longer blocks → stage 1', () => {
   assert.strictEqual(nextChaseStage(inv({ days_overdue: 30, snoozed_until: daysAgo(1) })), 1);
 });
+
+// ── Configurable cadence ─────────────────────────────────────────────────────
+const cad = { stage1: 3, stage2: 14, stage3: 30, cooldown: 10 };
+
+test('custom cadence: stage 0 at 2d → null (needs 3)', () => {
+  assert.strictEqual(nextChaseStage(inv({ days_overdue: 2 }), cad), null);
+});
+test('custom cadence: stage 0 at 3d → stage 1', () => {
+  assert.strictEqual(nextChaseStage(inv({ days_overdue: 3 }), cad), 1);
+});
+test('custom cadence: stage 1 at 14d → stage 2', () => {
+  assert.strictEqual(nextChaseStage(inv({ chase_stage: 1, days_overdue: 14, last_chased_at: daysAgo(12) }), cad), 2);
+});
+test('custom cadence: 10-day cooldown blocks a chase 8 days ago', () => {
+  assert.strictEqual(nextChaseStage(inv({ chase_stage: 1, days_overdue: 30, last_chased_at: daysAgo(8) }), cad), null);
+});

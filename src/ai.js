@@ -120,8 +120,11 @@ Output only the message text — no explanation, no notes.`;
 }
 
 // Determine which stage an invoice should be chased at, based on days overdue
-// and what stage was last sent (never skip a stage, never repeat within 6 days).
-function nextChaseStage(invoice) {
+// and what stage was last sent. `cadence` is configurable (defaults match the
+// original 1/7/21-day schedule with a 6-day re-chase cooldown).
+function nextChaseStage(invoice, cadence) {
+  const c = cadence || {};
+  const s1 = c.stage1 ?? 1, s2 = c.stage2 ?? 7, s3 = c.stage3 ?? 21, cool = c.cooldown ?? 6;
   const { days_overdue, chase_stage, last_chased_at, snoozed_until } = invoice;
 
   if (snoozed_until && new Date(snoozed_until) > new Date()) return null;
@@ -130,12 +133,12 @@ function nextChaseStage(invoice) {
     ? Math.floor((Date.now() - new Date(last_chased_at)) / 86400000)
     : 999;
 
-  // Don't re-chase within 6 days of last message
-  if (daysSinceLastChase < 6) return null;
+  // Don't re-chase within the cooldown window of the last message
+  if (daysSinceLastChase < cool) return null;
 
-  if (chase_stage === 0 && days_overdue >= 1)  return 1;
-  if (chase_stage === 1 && days_overdue >= 7)  return 2;
-  if (chase_stage === 2 && days_overdue >= 21) return 3;
+  if (chase_stage === 0 && days_overdue >= s1) return 1;
+  if (chase_stage === 1 && days_overdue >= s2) return 2;
+  if (chase_stage === 2 && days_overdue >= s3) return 3;
 
   return null;
 }

@@ -74,7 +74,7 @@ async function sendChaseEmail({ to, toName, rawMessage, invoiceNumber, senderNam
 </body>
 </html>`;
 
-  const fromName = process.env.FROM_NAME || senderName;
+  const fromName = senderName || process.env.FROM_NAME || 'PaidUp';
   await transport().sendMail({
     // Gmail SMTP sends as the authenticated account; display name can vary.
     from: `"${fromName}" <${process.env.GMAIL_USER}>`,
