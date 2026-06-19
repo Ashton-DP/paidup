@@ -179,6 +179,17 @@
       font-size: 13px;
       font-weight: 500;
     }
+    .trial-banner {
+      background: #1e2a18; color: #bfe3a8; border: 1px solid #2d4a20;
+      border-radius: 10px; padding: 12px 18px; margin-bottom: 18px; font-size: 13px; font-weight: 500;
+    }
+    .trial-banner a { color: #9fe080; cursor: pointer; text-decoration: underline; }
+    .plan-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px; border: 1px solid #2a2a35; border-radius: 10px; margin-bottom: 10px;
+    }
+    .plan-name { font-weight: 600; color: #fff; }
+    .plan-price { font-size: 13px; color: #888; margin-top: 2px; }
 
     .modal-overlay {
       display: none;
@@ -266,6 +277,17 @@
       <button type="submit" class="btn-primary">Add invoice</button>
     </div>
   </form>
+</div>
+
+<div class="modal-overlay" id="billing-modal">
+  <div class="modal">
+    <h3>Plans &amp; billing</h3>
+    <div class="hint" id="billing-sub"></div>
+    <div id="billing-plans"><div class="empty">Loading…</div></div>
+    <div class="modal-actions">
+      <button type="button" class="btn-ghost" onclick="closeBilling()">Close</button>
+    </div>
+  </div>
 </div>
 
 <div class="modal-overlay" id="settings-modal">
@@ -467,6 +489,49 @@ async function togglePause(paused) {
   await load();
 }
 
+function billingBanner(b) {
+  if (!b) return '';
+  if (!b.active) {
+    return `<div class="pause-banner">Your free trial has ended — subscribe to keep chasing.
+      <a onclick="openBilling()" style="color:#fff;text-decoration:underline;cursor:pointer">See plans →</a></div>`;
+  }
+  if (b.status === 'trialing' && b.trial_days_left <= 7) {
+    return `<div class="trial-banner">Free trial — ${b.trial_days_left} day${b.trial_days_left !== 1 ? 's' : ''} left.
+      <a onclick="openBilling()">Subscribe →</a></div>`;
+  }
+  return '';
+}
+
+async function openBilling() {
+  const m = document.getElementById('billing-modal');
+  m.style.display = 'flex';
+  document.getElementById('billing-plans').innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const b = await api('GET', '/api/billing');
+    document.getElementById('billing-sub').innerHTML = b.status === 'active'
+      ? `Current plan: <b style="color:#fff">${b.plan}</b> · active`
+      : (b.status === 'trialing'
+          ? `Free trial — <b style="color:#fff">${b.trial_days_left} days</b> left`
+          : `Status: <b style="color:#fff">${b.status}</b>`);
+    document.getElementById('billing-plans').innerHTML = b.plans.map(p => `
+      <div class="plan-row">
+        <div><div class="plan-name">${p.name}</div><div class="plan-price">R${p.price}/month</div></div>
+        <button class="btn-primary btn-sm" onclick="subscribe('${p.key}')">
+          ${b.plan === p.key && b.status === 'active' ? 'Current plan' : 'Choose'}</button>
+      </div>`).join('');
+  } catch (e) {
+    document.getElementById('billing-plans').innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+  }
+}
+function closeBilling() { document.getElementById('billing-modal').style.display = 'none'; }
+async function subscribe(plan) {
+  try {
+    const r = await api('POST', '/api/billing/subscribe', { plan });
+    if (r.authorization_url) window.location.href = r.authorization_url;
+    else toast('Could not start checkout', true);
+  } catch (e) { toast(e.message, true); }
+}
+
 async function openSettings() {
   const m = document.getElementById('settings-modal');
   m.style.display = 'flex';
@@ -540,7 +605,7 @@ async function handleCsvFile(input) {
 }
 
 function renderConnected(data) {
-  const { stats, invoices, recent, currency } = data;
+  const { stats, invoices, recent, currency, billing } = data;
 
   document.getElementById('header-actions').innerHTML = `
     <button class="btn-ghost btn-sm" id="btn-sync" onclick="syncInvoices()">Sync Xero</button>
@@ -550,6 +615,7 @@ function renderConnected(data) {
       ? `<button class="btn-success btn-sm" onclick="togglePause(false)">▶ Resume chasing</button>`
       : `<button class="btn-danger btn-sm" onclick="togglePause(true)">⏸ Pause chasing</button>
          <button class="btn-primary btn-sm" id="btn-chase" onclick="chaseNow()">Chase now</button>`}
+    <button class="btn-ghost btn-sm" onclick="openBilling()">Billing</button>
     <button class="btn-ghost btn-sm" onclick="openSettings()">⚙ Settings</button>
     <a href="/logout" class="btn-ghost btn-sm" style="text-decoration:none;display:inline-flex;align-items:center">Sign out</a>`;
 
@@ -588,6 +654,7 @@ function renderConnected(data) {
     </div>`).join('') : `<div class="empty">No messages sent yet</div>`;
 
   document.getElementById('main').innerHTML = `
+    ${billingBanner(billing)}
     ${data.paused ? `<div class="pause-banner">⏸ Chasing is paused — no messages will be sent until you resume.</div>` : ''}
     <div class="stats-grid">
       <div class="stat-card highlight">
@@ -655,8 +722,10 @@ async function load() {
 
 // Check for URL params (post-auth redirect)
 const params = new URLSearchParams(location.search);
-if (params.get('connected')) { history.replaceState({}, '', '/app'); toast('Xero connected!'); }
-if (params.get('error'))     { history.replaceState({}, '', '/app'); toast(params.get('error'), true); }
+if (params.get('connected'))  { history.replaceState({}, '', '/app'); toast('Xero connected!'); }
+if (params.get('error'))      { history.replaceState({}, '', '/app'); toast(params.get('error'), true); }
+if (params.get('subscribed')) { history.replaceState({}, '', '/app'); toast('Subscription active — thank you! 🎉'); }
+if (params.get('billing') === 'failed') { history.replaceState({}, '', '/app'); toast('Payment was not completed', true); }
 
 load();
 setInterval(load, 30000); // refresh every 30s

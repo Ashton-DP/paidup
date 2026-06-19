@@ -52,6 +52,37 @@ function verifyLogin(email, password) {
   return verifyPassword(password, acc.password_hash) ? acc : null;
 }
 
+// An account may use PaidUp if it has an active subscription OR is still within
+// its free trial.
+function isActive(account) {
+  if (!account) return false;
+  if (account.subscription_status === 'active') return true;
+  if (account.subscription_status === 'trialing' && account.trial_ends_at
+      && new Date(account.trial_ends_at) > new Date()) return true;
+  return false;
+}
+
+// Days left in the trial (0 if expired / not trialing).
+function trialDaysLeft(account) {
+  if (!account || account.subscription_status !== 'trialing' || !account.trial_ends_at) return 0;
+  return Math.max(0, Math.ceil((new Date(account.trial_ends_at) - new Date()) / 86400000));
+}
+
+function setSubscription(accountId, { plan, status, customerCode, subscriptionCode, periodEnd }) {
+  const cur = getAccount(accountId);
+  if (!cur) return;
+  db.prepare(`UPDATE accounts SET
+      plan = COALESCE(?, plan),
+      subscription_status = COALESCE(?, subscription_status),
+      paystack_customer_code = COALESCE(?, paystack_customer_code),
+      paystack_subscription_code = COALESCE(?, paystack_subscription_code),
+      current_period_end = COALESCE(?, current_period_end)
+    WHERE id = ?`)
+    .run(plan || null, status || null, customerCode || null, subscriptionCode || null, periodEnd || null, accountId);
+  return getAccount(accountId);
+}
+
 module.exports = {
   hashPassword, verifyPassword, findAccountByEmail, getAccount, createAccount, verifyLogin,
+  isActive, trialDaysLeft, setSubscription,
 };

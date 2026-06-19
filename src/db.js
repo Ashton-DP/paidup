@@ -108,6 +108,11 @@ function ensureColumn(table, column, definition) {
 ensureColumn('invoices', 'disputed', 'INTEGER DEFAULT 0');
 // Multi-tenancy: tenants belong to an account.
 ensureColumn('tenants', 'account_id', 'TEXT');
+// Billing (Paystack) state on the account.
+ensureColumn('accounts', 'subscription_status', "TEXT DEFAULT 'trialing'");
+ensureColumn('accounts', 'paystack_customer_code', 'TEXT');
+ensureColumn('accounts', 'paystack_subscription_code', 'TEXT');
+ensureColumn('accounts', 'current_period_end', 'TEXT');
 
 // Settings are per-account. If an older global settings table exists (no
 // account_id column), drop it — the values (cadence/kill switch) re-default
