@@ -43,16 +43,16 @@ function isSuppressed(tenantId, channel, identifier) {
 
 // ── Global kill switch ───────────────────────────────────────────────────────
 
-function isChasingPaused() {
-  const row = db.prepare(`SELECT value FROM settings WHERE key = 'chasing_paused'`).get();
+function isChasingPaused(accountId) {
+  const row = db.prepare(`SELECT value FROM settings WHERE account_id = ? AND key = 'chasing_paused'`).get(accountId);
   return row?.value === '1';
 }
 
-function setChasingPaused(paused) {
-  db.prepare(`INSERT INTO settings (key, value) VALUES ('chasing_paused', ?)
-              ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
-    .run(paused ? '1' : '0');
-  return isChasingPaused();
+function setChasingPaused(accountId, paused) {
+  db.prepare(`INSERT INTO settings (account_id, key, value) VALUES (?, 'chasing_paused', ?)
+              ON CONFLICT(account_id, key) DO UPDATE SET value = excluded.value`)
+    .run(accountId, paused ? '1' : '0');
+  return isChasingPaused(accountId);
 }
 
 module.exports = {

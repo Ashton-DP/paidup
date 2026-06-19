@@ -17,8 +17,9 @@ const { phoneKey, emailKey, isSuppressed, isChasingPaused, addSuppression } = re
 const { getCadence, getAppSettings } = require('./settings');
 
 async function runChaseForTenant(tenantRow) {
-  // Global kill switch — halt all outbound chasing.
-  if (isChasingPaused()) {
+  const accountId = tenantRow.account_id;
+  // Per-account kill switch — halt all outbound chasing for this account.
+  if (isChasingPaused(accountId)) {
     console.log('[chaser] chasing is paused — skipping run');
     return 0;
   }
@@ -30,8 +31,8 @@ async function runChaseForTenant(tenantRow) {
     ORDER BY days_overdue DESC
   `).all(tenantRow.id);
 
-  const cadence = getCadence();
-  const businessName = getAppSettings().business_name;
+  const cadence = getCadence(accountId);
+  const businessName = getAppSettings(accountId).business_name;
   let chased = 0;
 
   for (const invoice of invoices) {
@@ -144,23 +145,24 @@ function handleReply({ tenantId, fromNumber, body, intent }) {
 
 // The stage a manual chase should use: the natural next stage if due, else the
 // next stage up (capped at final) so the operator can always escalate by hand.
-function computeManualStage(invoice) {
-  return nextChaseStage(invoice, getCadence()) || Math.min((invoice.chase_stage || 0) + 1, 3) || 1;
+function computeManualStage(invoice, accountId) {
+  return nextChaseStage(invoice, getCadence(accountId)) || Math.min((invoice.chase_stage || 0) + 1, 3) || 1;
 }
 
 function loadInvoiceWithSender(invoiceId) {
   const invoice = db.prepare(`SELECT * FROM invoices WHERE id = ?`).get(invoiceId);
   if (!invoice) throw new Error('Invoice not found');
   const tenant = db.prepare(`SELECT * FROM tenants WHERE id = ?`).get(invoice.tenant_id);
-  const senderName = getAppSettings().business_name || tenant?.name || 'PaidUp';
-  return { invoice, senderName };
+  const accountId = tenant?.account_id;
+  const senderName = getAppSettings(accountId).business_name || tenant?.name || 'PaidUp';
+  return { invoice, senderName, accountId };
 }
 
 // Generate (but DO NOT send) the messages for one invoice, so the operator can
 // review before sending.
 async function previewChase(invoiceId) {
-  const { invoice, senderName } = loadInvoiceWithSender(invoiceId);
-  const stage = computeManualStage(invoice);
+  const { invoice, senderName, accountId } = loadInvoiceWithSender(invoiceId);
+  const stage = computeManualStage(invoice, accountId);
   const out = { stage, contact_name: invoice.contact_name };
   if (invoice.contact_email) {
     out.email = await generateChaseMessage({ invoice, stage, channel: 'email', senderName });
@@ -176,8 +178,8 @@ async function previewChase(invoiceId) {
 // Send the chase for ONE invoice (operator override — ignores the global pause,
 // but still never messages an opted-out channel). Advances the stage.
 async function sendChaseForInvoice(invoiceId) {
-  const { invoice, senderName } = loadInvoiceWithSender(invoiceId);
-  const stage = computeManualStage(invoice);
+  const { invoice, senderName, accountId } = loadInvoiceWithSender(invoiceId);
+  const stage = computeManualStage(invoice, accountId);
   const sent = [];
 
   const errors = [];

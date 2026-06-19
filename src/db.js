@@ -9,8 +9,20 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
 db.exec(`
+  -- A customer account = one paying business. Owns its tenants/invoices/settings.
+  CREATE TABLE IF NOT EXISTS accounts (
+    id            TEXT PRIMARY KEY,
+    email         TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    business_name TEXT,
+    plan          TEXT DEFAULT 'trial',
+    trial_ends_at TEXT,
+    created_at    TEXT DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS tenants (
     id          TEXT PRIMARY KEY,
+    account_id  TEXT,
     name        TEXT NOT NULL,
     xero_tenant_id TEXT UNIQUE NOT NULL,
     tokens      TEXT,
@@ -74,11 +86,8 @@ db.exec(`
     UNIQUE(tenant_id, channel, identifier)
   );
 
-  -- Simple key/value store for app-wide settings (e.g. the chasing kill switch).
-  CREATE TABLE IF NOT EXISTS settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT
-  );
+  -- Per-account key/value settings (business name, cadence, kill switch).
+  -- Created/migrated to the account-scoped schema in the migrations below.
 
   -- Marketing waitlist sign-ups from the landing page.
   CREATE TABLE IF NOT EXISTS waitlist (
@@ -97,5 +106,23 @@ function ensureColumn(table, column, definition) {
 }
 // A 'dispute' reply pauses chasing on the invoice until a human resolves it.
 ensureColumn('invoices', 'disputed', 'INTEGER DEFAULT 0');
+// Multi-tenancy: tenants belong to an account.
+ensureColumn('tenants', 'account_id', 'TEXT');
+
+// Settings are per-account. If an older global settings table exists (no
+// account_id column), drop it — the values (cadence/kill switch) re-default
+// per account. Then ensure the account-scoped schema.
+const settingsCols = db.prepare(`PRAGMA table_info(settings)`).all();
+if (settingsCols.length && !settingsCols.some(c => c.name === 'account_id')) {
+  db.exec(`DROP TABLE settings`);
+}
+db.exec(`
+  CREATE TABLE IF NOT EXISTS settings (
+    account_id TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    value      TEXT,
+    PRIMARY KEY (account_id, key)
+  );
+`);
 
 module.exports = db;

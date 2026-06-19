@@ -40,7 +40,7 @@ async function getAuthUrl() {
   return url;
 }
 
-async function handleCallback(url) {
+async function handleCallback(url, accountId) {
   let tokenSet;
   try {
     // Note: `url` carries the one-time OAuth `code` — never log it.
@@ -68,13 +68,15 @@ async function handleCallback(url) {
   // same token set works for every connected org (the xero-tenant-id header
   // selects which one we read).
   for (const t of tenants) {
-    const existing = db.prepare(`SELECT id FROM tenants WHERE xero_tenant_id = ?`)
-      .get(t.tenantId);
+    // Scope to this account so one account can't hijack another's connection.
+    const existing = db.prepare(`SELECT id FROM tenants WHERE xero_tenant_id = ? AND account_id IS ?`)
+      .get(t.tenantId, accountId || null);
     if (!existing) {
-      db.prepare(`INSERT INTO tenants (id, name, xero_tenant_id, tokens)
-                  VALUES (?, ?, ?, ?)`)
+      db.prepare(`INSERT INTO tenants (id, account_id, name, xero_tenant_id, tokens)
+                  VALUES (?, ?, ?, ?, ?)`)
         .run(
           `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          accountId || null,
           t.tenantName,
           t.tenantId,
           JSON.stringify(tokenSet)

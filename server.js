@@ -16,33 +16,42 @@ const { isChasingPaused, setChasingPaused } = require('./src/safety');
 const { getAppSettings, setSetting, DEFAULTS } = require('./src/settings');
 const { csvToInvoices } = require('./src/csv');
 const { daysOverdue } = require('./src/xeroUtils');
+const accounts = require('./src/accounts');
 
 const app = express();
 
-// Pick the org to show/operate on: the one with the most overdue invoices (so
-// the dashboard surfaces the org that actually has work), tie-broken by the
-// most recently connected. MVP assumes a single active tenant.
-function activeTenant() {
+// Pick the org to show/operate on FOR THIS ACCOUNT: the one with the most
+// overdue invoices, tie-broken by most recently connected.
+function activeTenant(accountId) {
   return db.prepare(`
     SELECT t.* FROM tenants t
     LEFT JOIN invoices i ON i.tenant_id = t.id AND i.status = 'OVERDUE'
+    WHERE t.account_id IS ?
     GROUP BY t.id
     ORDER BY COUNT(i.id) DESC, t.created_at DESC
     LIMIT 1
-  `).get();
+  `).get(accountId || null);
 }
 
 const genId = () => `${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
-// Manual / CSV invoices attach to the active org, or to a local "My Business"
-// tenant created on demand — so PaidUp is usable with no Xero connection.
-function targetTenantForManual() {
-  const existing = activeTenant();
+// Manual / CSV invoices attach to the account's active org, or to a local "My
+// Business" tenant created on demand — so PaidUp is usable with no Xero.
+function targetTenantForManual(accountId) {
+  const existing = activeTenant(accountId);
   if (existing) return existing;
   const id = genId();
-  db.prepare(`INSERT INTO tenants (id, name, xero_tenant_id, tokens)
-              VALUES (?, 'My Business', ?, NULL)`).run(id, 'local-' + id);
+  db.prepare(`INSERT INTO tenants (id, account_id, name, xero_tenant_id, tokens)
+              VALUES (?, ?, 'My Business', ?, NULL)`).run(id, accountId || null, 'local-' + id);
   return db.prepare(`SELECT * FROM tenants WHERE id = ?`).get(id);
+}
+
+// Return an invoice only if it belongs to this account (else null → 404).
+function ownedInvoice(invoiceId, accountId) {
+  return db.prepare(`
+    SELECT i.* FROM invoices i JOIN tenants t ON t.id = i.tenant_id
+    WHERE i.id = ? AND t.account_id IS ?
+  `).get(invoiceId, accountId || null);
 }
 
 function insertManualInvoice(tenantId, f) {
@@ -56,17 +65,13 @@ function insertManualInvoice(tenantId, f) {
     f.amount_due, (f.currency || 'ZAR').toUpperCase(), f.due_date, over);
 }
 
-function loginPage(error) {
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PaidUp — Sign in</title>
-<style>
+const AUTH_STYLES = `
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
     background:#0f0f13;color:#e8e8ec;min-height:100vh;display:flex;
-    align-items:center;justify-content:center}
+    align-items:center;justify-content:center;padding:20px}
   .card{background:#18181f;border:1px solid #2a2a35;border-radius:12px;
-    padding:36px 32px;width:340px}
+    padding:36px 32px;width:360px}
   .logo{font-size:22px;font-weight:600;color:#fff;margin-bottom:6px}
   .logo span{color:#6c8fff}
   .sub{color:#888;font-size:13px;margin-bottom:24px}
@@ -80,14 +85,43 @@ function loginPage(error) {
   button:hover{opacity:.9}
   .err{background:#4a2020;color:#ffb3b3;border:1px solid #6b2737;border-radius:8px;
     padding:9px 12px;font-size:12px;margin-bottom:16px}
-</style></head><body>
+  .alt{margin-top:18px;font-size:13px;color:#888;text-align:center}
+  .alt a{color:#6c8fff;text-decoration:none}`;
+
+function loginPage(error) {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PaidUp — Sign in</title><style>${AUTH_STYLES}</style></head><body>
   <form class="card" method="POST" action="/login">
     <div class="logo">Paid<span>Up</span></div>
     <div class="sub">Sign in to your dashboard</div>
-    ${error ? `<div class="err">Incorrect password. Try again.</div>` : ''}
-    <label for="password">Password</label>
-    <input type="password" id="password" name="password" autofocus required>
+    ${error ? `<div class="err">Incorrect email or password.</div>` : ''}
+    <label>Email</label>
+    <input type="email" name="email" autofocus required>
+    <label>Password</label>
+    <input type="password" name="password" required>
     <button type="submit">Sign in</button>
+    <div class="alt">No account yet? <a href="/signup">Create one</a></div>
+  </form>
+</body></html>`;
+}
+
+function signupPage(error) {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PaidUp — Create account</title><style>${AUTH_STYLES}</style></head><body>
+  <form class="card" method="POST" action="/signup">
+    <div class="logo">Paid<span>Up</span></div>
+    <div class="sub">Start your free trial</div>
+    ${error ? `<div class="err">${error}</div>` : ''}
+    <label>Business name</label>
+    <input type="text" name="business_name" placeholder="e.g. Karoo Coffee Co" autofocus>
+    <label>Email</label>
+    <input type="email" name="email" required>
+    <label>Password</label>
+    <input type="password" name="password" placeholder="At least 8 characters" required>
+    <button type="submit">Create account</button>
+    <div class="alt">Already have an account? <a href="/login">Sign in</a></div>
   </form>
 </body></html>`;
 }
@@ -112,24 +146,16 @@ app.use(session({
 }));
 
 // ── Auth gate ────────────────────────────────────────────────────────────────
-// A password gate over the dashboard + API so a public deployment isn't wide
-// open. External callbacks (OAuth, webhooks) stay public — they validate
-// themselves. Enforced whenever DASHBOARD_PASSWORD is set; in production we
-// fail CLOSED if it's missing so data is never served unprotected.
-const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || '';
-const AUTH_REQUIRED = !!DASHBOARD_PASSWORD;
+// Per-account auth: the dashboard + API require a logged-in account. The
+// landing page and external callbacks (OAuth, webhooks) stay public.
 const PUBLIC_PATHS = new Set([
-  '/', '/index.html', '/healthz', '/login', '/logout', '/api/waitlist',
+  '/', '/index.html', '/healthz', '/login', '/signup', '/logout', '/api/waitlist',
   '/xero/connect', '/xero/callback', '/xero/webhook', '/twilio/reply',
 ]);
 function requireAuth(req, res, next) {
   if (PUBLIC_PATHS.has(req.path)) return next();
-  if (!AUTH_REQUIRED) {
-    if (isProd) return res.status(503)
-      .send('Dashboard locked: set DASHBOARD_PASSWORD to enable access.');
-    return next(); // dev convenience when no password is configured
-  }
-  if (req.session && req.session.authed) return next();
+  const accountId = req.session && req.session.accountId;
+  if (accountId && accounts.getAccount(accountId)) { req.accountId = accountId; return next(); }
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'auth required' });
   return res.redirect('/login');
 }
@@ -153,20 +179,37 @@ app.post('/api/waitlist', (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Login ──────────────────────────────────────────────────────────────────
+// ── Auth (accounts) ──────────────────────────────────────────────────────────
 app.get('/login', (req, res) => {
-  if (!AUTH_REQUIRED || req.session?.authed) return res.redirect('/app');
+  if (req.session?.accountId) return res.redirect('/app');
   res.type('html').send(loginPage(!!req.query.error));
 });
 app.post('/login', (req, res) => {
-  if (AUTH_REQUIRED && req.body.password === DASHBOARD_PASSWORD) {
-    req.session.authed = true;
-    return res.redirect('/app');
+  const acc = accounts.verifyLogin(req.body.email, req.body.password);
+  if (!acc) return res.redirect('/login?error=1');
+  req.session.accountId = acc.id;
+  res.redirect('/app');
+});
+app.get('/signup', (req, res) => {
+  if (req.session?.accountId) return res.redirect('/app');
+  res.type('html').send(signupPage(req.query.error ? String(req.query.error) : null));
+});
+app.post('/signup', (req, res) => {
+  try {
+    const acc = accounts.createAccount({
+      email: req.body.email,
+      password: req.body.password,
+      businessName: req.body.business_name,
+      trialEndsAt: new Date(Date.now() + 14 * 86400000).toISOString(),
+    });
+    req.session.accountId = acc.id;
+    res.redirect('/app');
+  } catch (e) {
+    res.redirect('/signup?error=' + encodeURIComponent(e.message));
   }
-  res.redirect('/login?error=1');
 });
 app.get('/logout', (req, res) => {
-  if (req.session) req.session.authed = false;
+  if (req.session) req.session.accountId = null;
   res.redirect('/');
 });
 
@@ -179,7 +222,9 @@ app.get('/xero/connect', async (req, res) => {
 
 app.get('/xero/callback', async (req, res) => {
   try {
-    const tenant = await handleCallback(`${process.env.BASE_URL}/xero/callback?${new URLSearchParams(req.query)}`);
+    const tenant = await handleCallback(
+      `${process.env.BASE_URL}/xero/callback?${new URLSearchParams(req.query)}`,
+      req.session.accountId);
     req.session.tenantId = tenant.tenantId;
     res.redirect('/app?connected=1');
   } catch (err) {
@@ -219,10 +264,13 @@ app.post('/xero/webhook', express.raw({ type: '*/*' }), (req, res) => {
 app.post('/twilio/reply', (req, res) => {
   const { From, Body } = req.body;
   const intent = parseReplyIntent(Body);
-  const tenants = db.prepare(`SELECT * FROM tenants`).all();
-  const tenant = tenants[0]; // single-tenant MVP
-
-  if (tenant) handleReply({ tenantId: tenant.id, fromNumber: From, body: Body, intent });
+  // Route the reply to whichever tenant has a matching invoice phone number.
+  const key = String(From || '').replace(/\D/g, '').slice(-9);
+  const inv = key
+    ? db.prepare(`SELECT tenant_id FROM invoices WHERE contact_phone LIKE ?
+                  ORDER BY last_chased_at DESC LIMIT 1`).get('%' + key + '%')
+    : null;
+  if (inv) handleReply({ tenantId: inv.tenant_id, fromNumber: From, body: Body, intent });
 
   // Twilio expects TwiML response (empty is fine — no auto-reply in MVP)
   res.type('text/xml').send('<Response></Response>');
@@ -231,8 +279,8 @@ app.post('/twilio/reply', (req, res) => {
 // ── Dashboard API ──────────────────────────────────────────────────────────
 
 app.get('/api/status', (req, res) => {
-  const tenant = activeTenant();
-  if (!tenant) return res.json({ connected: false });
+  const tenant = activeTenant(req.accountId);
+  if (!tenant) return res.json({ connected: false, paused: isChasingPaused(req.accountId) });
 
   const stats = db.prepare(`
     SELECT
@@ -263,12 +311,12 @@ app.get('/api/status', (req, res) => {
   `).get(tenant.id);
 
   res.json({ connected: true, tenant: tenant.name,
-             currency: curRow?.currency || 'ZAR', paused: isChasingPaused(),
+             currency: curRow?.currency || 'ZAR', paused: isChasingPaused(req.accountId),
              stats, invoices, recent });
 });
 
 app.get('/api/invoices', (req, res) => {
-  const tenant = activeTenant();
+  const tenant = activeTenant(req.accountId);
   if (!tenant) return res.json([]);
   const rows = db.prepare(`SELECT * FROM invoices WHERE tenant_id = ?
                             ORDER BY days_overdue DESC`).all(tenant.id);
@@ -276,7 +324,7 @@ app.get('/api/invoices', (req, res) => {
 });
 
 app.post('/api/sync', async (req, res) => {
-  const tenant = activeTenant();
+  const tenant = activeTenant(req.accountId);
   if (!tenant) return res.status(400).json({ error: 'Not connected to Xero' });
   try {
     const count = await syncOverdueInvoices(tenant);
@@ -287,16 +335,16 @@ app.post('/api/sync', async (req, res) => {
 });
 
 app.post('/api/pause', (req, res) => {
-  res.json({ paused: setChasingPaused(!!req.body.paused) });
+  res.json({ paused: setChasingPaused(req.accountId, !!req.body.paused) });
 });
 
-// Business name + chase cadence settings.
-app.get('/api/settings', (req, res) => res.json(getAppSettings()));
+// Business name + chase cadence settings (per account).
+app.get('/api/settings', (req, res) => res.json(getAppSettings(req.accountId)));
 app.post('/api/settings', (req, res) => {
   for (const k of Object.keys(DEFAULTS)) {
-    if (req.body[k] !== undefined) setSetting(k, req.body[k]);
+    if (req.body[k] !== undefined) setSetting(req.accountId, k, req.body[k]);
   }
-  res.json(getAppSettings());
+  res.json(getAppSettings(req.accountId));
 });
 
 // Add a single invoice manually (no Xero needed).
@@ -306,7 +354,7 @@ app.post('/api/invoices/manual', (req, res) => {
   if (!contact_name || !(amount > 0) || !due_date) {
     return res.status(400).json({ error: 'Name, a positive amount, and a due date are required' });
   }
-  const tenant = targetTenantForManual();
+  const tenant = targetTenantForManual(req.accountId);
   insertManualInvoice(tenant.id, {
     contact_name,
     contact_email: req.body.contact_email,
@@ -325,13 +373,13 @@ app.post('/api/invoices/import', (req, res) => {
   if (!invoices.length) {
     return res.status(400).json({ error: 'No valid rows found (need name, amount, due date)', skipped });
   }
-  const tenant = targetTenantForManual();
+  const tenant = targetTenantForManual(req.accountId);
   db.transaction(rows => rows.forEach(r => insertManualInvoice(tenant.id, r)))(invoices);
   res.json({ imported: invoices.length, skipped });
 });
 
 app.post('/api/chase-now', async (req, res) => {
-  const tenant = activeTenant();
+  const tenant = activeTenant(req.accountId);
   if (!tenant) return res.status(400).json({ error: 'Not connected to Xero' });
   try {
     const count = await runChaseForTenant(tenant);
@@ -343,12 +391,14 @@ app.post('/api/chase-now', async (req, res) => {
 
 // Preview the AI message(s) for one invoice without sending.
 app.post('/api/invoice/:id/preview', async (req, res) => {
+  if (!ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
   try { res.json(await previewChase(req.params.id)); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Send the chase for one invoice (operator override of the cron cadence).
 app.post('/api/invoice/:id/send', async (req, res) => {
+  if (!ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
   try {
     const r = await sendChaseForInvoice(req.params.id);
     if (!r.sent.length) {
@@ -359,6 +409,7 @@ app.post('/api/invoice/:id/send', async (req, res) => {
 });
 
 app.post('/api/invoice/:id/snooze', (req, res) => {
+  if (!ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
   const days = parseInt(req.body.days) || 5;
   db.prepare(`UPDATE invoices SET snoozed_until = datetime('now', ?),
               updated_at = datetime('now') WHERE id = ?`)
@@ -367,6 +418,7 @@ app.post('/api/invoice/:id/snooze', (req, res) => {
 });
 
 app.post('/api/invoice/:id/paid', (req, res) => {
+  if (!ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
   db.prepare(`UPDATE invoices SET status = 'PAID', paid_at = datetime('now'),
               updated_at = datetime('now') WHERE id = ?`).run(req.params.id);
   res.json({ ok: true });
@@ -375,6 +427,7 @@ app.post('/api/invoice/:id/paid', (req, res) => {
 // Remove a single invoice (and its chase history). Xero-synced ones return on
 // the next sync; manual ones are gone for good.
 app.delete('/api/invoice/:id', (req, res) => {
+  if (!ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
   db.transaction(() => {
     db.prepare(`DELETE FROM chase_log WHERE invoice_id = ?`).run(req.params.id);
     db.prepare(`DELETE FROM invoices WHERE id = ?`).run(req.params.id);
@@ -382,15 +435,19 @@ app.delete('/api/invoice/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// Wipe everything to a clean slate (invoices, connections, history) — keeps
-// app settings and the marketing waitlist.
+// Wipe THIS ACCOUNT's data to a clean slate (its invoices, connections,
+// history) — keeps the account itself, its settings and the waitlist.
 app.post('/api/reset', (req, res) => {
+  const tids = db.prepare(`SELECT id FROM tenants WHERE account_id IS ?`)
+    .all(req.accountId || null).map(r => r.id);
   db.transaction(() => {
-    db.prepare(`DELETE FROM replies`).run();
-    db.prepare(`DELETE FROM chase_log`).run();
-    db.prepare(`DELETE FROM invoices`).run();
-    db.prepare(`DELETE FROM suppressions`).run();
-    db.prepare(`DELETE FROM tenants`).run();
+    for (const tid of tids) {
+      db.prepare(`DELETE FROM chase_log WHERE tenant_id = ?`).run(tid);
+      db.prepare(`DELETE FROM replies WHERE tenant_id = ?`).run(tid);
+      db.prepare(`DELETE FROM suppressions WHERE tenant_id = ?`).run(tid);
+      db.prepare(`DELETE FROM invoices WHERE tenant_id = ?`).run(tid);
+    }
+    db.prepare(`DELETE FROM tenants WHERE account_id IS ?`).run(req.accountId || null);
   })();
   res.json({ ok: true });
 });
