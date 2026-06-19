@@ -19,6 +19,26 @@ function transport() {
   return _transport;
 }
 
+// Resend (https://resend.com) — preferred for production: send from your own
+// authenticated domain (SPF/DKIM) so reminders land in inboxes, not spam.
+async function sendViaResend({ from, to, toName, subject, text, html }) {
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + process.env.RESEND_API_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to: [toName ? `${toName} <${to}>` : to],
+      subject, text, html,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.message || `Resend error ${res.status}`);
+  return data;
+}
+
 // Split the AI-generated message into subject + body (email has "Subject: ..." line)
 function parseEmailMessage(raw) {
   const lines = raw.split('\n');
@@ -75,16 +95,26 @@ async function sendChaseEmail({ to, toName, rawMessage, invoiceNumber, senderNam
 </html>`;
 
   const fromName = senderName || process.env.FROM_NAME || 'PaidUp';
+
+  if (process.env.RESEND_API_KEY) {
+    // Production path: send from the authenticated domain via Resend.
+    await sendViaResend({
+      from: `${fromName} <${process.env.FROM_EMAIL}>`,
+      to, toName, subject, text: body, html,
+    });
+    console.log(`[email] (resend) sent to ${to} re invoice ${invoiceNumber}`);
+    return;
+  }
+
+  // Fallback: Gmail SMTP (dev / before the domain is verified in Resend).
   await transport().sendMail({
-    // Gmail SMTP sends as the authenticated account; display name can vary.
     from: `"${fromName}" <${process.env.GMAIL_USER}>`,
     to: toName ? `"${toName}" <${to}>` : to,
     subject,
     text: body,
     html,
   });
-
-  console.log(`[email] sent stage message to ${to} re invoice ${invoiceNumber}`);
+  console.log(`[email] (gmail) sent to ${to} re invoice ${invoiceNumber}`);
 }
 
 module.exports = { sendChaseEmail, parseEmailMessage };
