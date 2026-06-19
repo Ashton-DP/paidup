@@ -79,6 +79,13 @@ db.exec(`
     key   TEXT PRIMARY KEY,
     value TEXT
   );
+
+  -- Marketing waitlist sign-ups from the landing page.
+  CREATE TABLE IF NOT EXISTS waitlist (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    email       TEXT UNIQUE NOT NULL,
+    created_at  TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // ── Lightweight migrations (add columns to existing tables) ──────────────────

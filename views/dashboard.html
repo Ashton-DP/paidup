@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PaidUp — Get paid. Automatically.</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f13;
+      color: #e8e8ec;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #18181f;
+      border-bottom: 1px solid #2a2a35;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+    }
+
+    .logo { font-size: 17px; font-weight: 600; color: #fff; }
+    .logo span { color: #6c8fff; }
+
+    .header-actions { display: flex; gap: 10px; }
+
+    button {
+      font-size: 13px;
+      font-weight: 500;
+      padding: 7px 16px;
+      border-radius: 7px;
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-primary  { background: #6c8fff; color: #fff; }
+    .btn-ghost    { background: #2a2a35; color: #c0c0cc; }
+    .btn-success  { background: #2d6a4f; color: #b7e4c7; }
+    .btn-danger   { background: #6b2737; color: #ffb3c1; }
+    .btn-sm       { padding: 4px 10px; font-size: 12px; }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 28px 20px; }
+
+    .connect-prompt {
+      text-align: center;
+      padding: 80px 20px;
+    }
+    .connect-prompt h2 { font-size: 22px; margin-bottom: 12px; }
+    .connect-prompt p  { color: #888; margin-bottom: 28px; font-size: 15px; }
+    .connect-prompt a  {
+      background: #6c8fff; color: #fff;
+      padding: 12px 28px; border-radius: 8px;
+      font-weight: 600; font-size: 15px; text-decoration: none;
+      display: inline-block;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: #18181f;
+      border: 1px solid #2a2a35;
+      border-radius: 10px;
+      padding: 18px 20px;
+    }
+    .stat-card .label { font-size: 12px; color: #666; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .stat-card .value { font-size: 26px; font-weight: 600; color: #fff; }
+    .stat-card .sub   { font-size: 12px; color: #555; margin-top: 4px; }
+
+    .stat-card.highlight { border-color: #6c8fff44; }
+    .stat-card.highlight .value { color: #6c8fff; }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .section-header h2 { font-size: 15px; font-weight: 600; color: #ccc; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #18181f;
+      border: 1px solid #2a2a35;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 28px;
+      font-size: 13px;
+    }
+
+    thead tr { background: #1e1e28; }
+    th {
+      text-align: left;
+      padding: 11px 16px;
+      color: #666;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 500;
+      border-bottom: 1px solid #2a2a35;
+    }
+    td {
+      padding: 12px 16px;
+      border-bottom: 1px solid #1e1e28;
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: #1c1c25; }
+
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 2px 9px;
+      border-radius: 99px;
+    }
+    .badge-stage0 { background: #2a2a35; color: #777; }
+    .badge-stage1 { background: #2d4a6b; color: #7cb9e8; }
+    .badge-stage2 { background: #4a3020; color: #f4a460; }
+    .badge-stage3 { background: #4a2020; color: #ff8080; }
+
+    .overdue-low  { color: #e8e8ec; }
+    .overdue-mid  { color: #f4a460; }
+    .overdue-high { color: #ff6b6b; font-weight: 600; }
+
+    .amount { font-weight: 600; font-family: 'SF Mono', monospace; font-size: 13px; }
+
+    .actions-cell { display: flex; gap: 6px; }
+
+    .log-list {
+      background: #18181f;
+      border: 1px solid #2a2a35;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .log-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid #1e1e28;
+      font-size: 12px;
+    }
+    .log-item:last-child { border-bottom: none; }
+    .log-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+    .log-contact { font-weight: 500; color: #ddd; }
+    .log-detail  { color: #666; margin-top: 2px; }
+    .log-time    { margin-left: auto; color: #444; white-space: nowrap; flex-shrink: 0; }
+
+    .empty { text-align: center; padding: 40px; color: #555; font-size: 13px; }
+
+    .pause-banner {
+      background: #4a2020;
+      color: #ffb3b3;
+      border: 1px solid #6b2737;
+      border-radius: 10px;
+      padding: 12px 18px;
+      margin-bottom: 18px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .modal-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.6);
+      align-items: center; justify-content: center;
+      z-index: 200;
+    }
+    .modal {
+      background: #18181f; border: 1px solid #2a2a35; border-radius: 12px;
+      padding: 24px; width: 460px; max-width: 92vw;
+    }
+    .modal h3 { font-size: 16px; margin-bottom: 4px; color: #fff; }
+    .modal .hint { font-size: 12px; color: #777; margin-bottom: 18px; }
+    .modal .field { margin-bottom: 12px; }
+    .modal .row2 { display: flex; gap: 12px; }
+    .modal .row2 .field { flex: 1; }
+    .modal label { display: block; font-size: 11px; color: #888; margin-bottom: 5px;
+      text-transform: uppercase; letter-spacing: .04em; }
+    .modal input {
+      width: 100%; background: #0f0f13; border: 1px solid #2a2a35; border-radius: 7px;
+      padding: 9px 11px; color: #e8e8ec; font-size: 13px;
+    }
+    .modal input:focus { outline: none; border-color: #6c8fff; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #2d6a4f;
+      color: #b7e4c7;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      opacity: 0;
+      transition: opacity 0.3s;
+      z-index: 100;
+    }
+    .toast.show { opacity: 1; }
+    .toast.error { background: #6b2737; color: #ffb3c1; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Paid<span>Up</span></div>
+  <div class="header-actions" id="header-actions"></div>
+</header>
+
+<main id="main">
+  <div class="empty">Loading…</div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<div class="modal-overlay" id="add-modal">
+  <form class="modal" onsubmit="return submitManual(event)">
+    <h3>Add an overdue invoice</h3>
+    <div class="hint">For when you're not on Xero — chase it like any other invoice.</div>
+    <div class="field"><label>Client name *</label><input name="contact_name" required></div>
+    <div class="row2">
+      <div class="field"><label>Email</label><input name="contact_email" type="email"></div>
+      <div class="field"><label>Phone (WhatsApp)</label><input name="contact_phone"></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Invoice #</label><input name="invoice_number"></div>
+      <div class="field"><label>Currency</label><input name="currency" value="ZAR"></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Amount due *</label><input name="amount_due" type="number" step="0.01" min="0" required></div>
+      <div class="field"><label>Due date *</label><input name="due_date" type="date" required></div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn-ghost" onclick="closeAddForm()">Cancel</button>
+      <button type="submit" class="btn-primary">Add invoice</button>
+    </div>
+  </form>
+</div>
+
+<input type="file" id="csv-input" accept=".csv,text/csv" style="display:none"
+       onchange="handleCsvFile(this)">
+
+
+<script>
+let state = null;
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+  return res.json();
+}
+
+function toast(msg, isError = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (isError ? ' error' : '');
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+function fmtMoney(n, currency = 'ZAR') {
+  try {
+    return new Intl.NumberFormat('en-ZA', { style: 'currency', currency }).format(Number(n));
+  } catch {
+    return (currency || '') + ' ' + Number(n).toLocaleString('en-ZA', { minimumFractionDigits: 2 });
+  }
+}
+
+function fmtTime(str) {
+  if (!str) return '—';
+  const d = new Date(str + 'Z');
+  return d.toLocaleDateString('en-ZA', { day: 'numeric', month: 'short' }) +
+         ' ' + d.toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' });
+}
+
+function overdueClass(days) {
+  if (days >= 21) return 'overdue-high';
+  if (days >= 7)  return 'overdue-mid';
+  return 'overdue-low';
+}
+
+function stageLabel(stage) {
+  const labels = ['Not chased', 'Reminder sent', 'Follow-up sent', 'Final notice'];
+  return `<span class="badge badge-stage${stage}">${labels[stage] || '—'}</span>`;
+}
+
+function channelIcon(channel) {
+  return channel === 'whatsapp' ? '💬' : '✉️';
+}
+
+async function syncInvoices() {
+  const btn = document.getElementById('btn-sync');
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+  try {
+    const r = await api('POST', '/api/sync');
+    toast(`Synced ${r.synced} overdue invoices from Xero`);
+    await load();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Sync Xero'; }
+  }
+}
+
+async function chaseNow() {
+  const btn = document.getElementById('btn-chase');
+  if (btn) { btn.disabled = true; btn.textContent = 'Chasing…'; }
+  try {
+    const r = await api('POST', '/api/chase-now');
+    toast(`Chased ${r.chased} invoices — messages sent`);
+    await load();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Chase now'; }
+  }
+}
+
+async function markPaid(id) {
+  await api('POST', `/api/invoice/${id}/paid`);
+  toast('Marked as paid');
+  await load();
+}
+
+async function snooze(id) {
+  await api('POST', `/api/invoice/${id}/snooze`, { days: 5 });
+  toast('Snoozed for 5 days');
+  await load();
+}
+
+async function togglePause(paused) {
+  await api('POST', '/api/pause', { paused });
+  toast(paused ? 'Chasing paused — no messages will send' : 'Chasing resumed');
+  await load();
+}
+
+function openAddForm()  { document.getElementById('add-modal').style.display = 'flex'; }
+function closeAddForm() { document.getElementById('add-modal').style.display = 'none'; }
+
+async function submitManual(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await api('POST', '/api/invoices/manual', {
+      contact_name:   f.contact_name.value.trim(),
+      contact_email:  f.contact_email.value.trim(),
+      contact_phone:  f.contact_phone.value.trim(),
+      invoice_number: f.invoice_number.value.trim(),
+      amount_due:     f.amount_due.value,
+      currency:       f.currency.value.trim() || 'ZAR',
+      due_date:       f.due_date.value,
+    });
+    toast('Invoice added');
+    closeAddForm();
+    f.reset();
+    await load();
+  } catch (err) { toast(err.message, true); }
+  return false;
+}
+
+function triggerCsvImport() { document.getElementById('csv-input').click(); }
+
+async function handleCsvFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const text = await file.text();
+  input.value = '';
+  try {
+    const r = await api('POST', '/api/invoices/import', { csv: text });
+    toast(`Imported ${r.imported} invoice${r.imported !== 1 ? 's' : ''}` +
+          (r.skipped ? ` — ${r.skipped} row(s) skipped` : ''));
+    await load();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+function renderConnected(data) {
+  const { stats, invoices, recent, currency } = data;
+
+  document.getElementById('header-actions').innerHTML = `
+    <button class="btn-ghost btn-sm" id="btn-sync" onclick="syncInvoices()">Sync Xero</button>
+    <button class="btn-ghost btn-sm" onclick="openAddForm()">+ Add</button>
+    <button class="btn-ghost btn-sm" onclick="triggerCsvImport()">Import CSV</button>
+    ${data.paused
+      ? `<button class="btn-success btn-sm" onclick="togglePause(false)">▶ Resume chasing</button>`
+      : `<button class="btn-danger btn-sm" onclick="togglePause(true)">⏸ Pause chasing</button>
+         <button class="btn-primary btn-sm" id="btn-chase" onclick="chaseNow()">Chase now</button>`}
+    <a href="/logout" class="btn-ghost btn-sm" style="text-decoration:none;display:inline-flex;align-items:center">Sign out</a>`;
+
+  const rows = invoices.length ? invoices.map(inv => `
+    <tr>
+      <td>
+        <div style="font-weight:500;color:#ddd">${inv.contact_name}</div>
+        <div style="color:#555;font-size:11px;margin-top:2px">${inv.contact_email || ''}</div>
+      </td>
+      <td style="color:#888">${inv.invoice_number}</td>
+      <td class="amount">${fmtMoney(inv.amount_due, inv.currency)}</td>
+      <td class="${overdueClass(inv.days_overdue)}">${inv.days_overdue}d</td>
+      <td>${stageLabel(inv.chase_stage)}</td>
+      <td>${inv.contact_phone ? '💬' : ''}${inv.contact_email ? ' ✉️' : ''}</td>
+      <td>
+        <div class="actions-cell">
+          <button class="btn-success btn-sm" onclick="markPaid('${inv.id}')">Paid</button>
+          <button class="btn-ghost btn-sm" onclick="snooze('${inv.id}')">Snooze 5d</button>
+        </div>
+      </td>
+    </tr>`).join('') : `<tr><td colspan="7" class="empty">No overdue invoices — great!</td></tr>`;
+
+  const logItems = recent.length ? recent.map(l => `
+    <div class="log-item">
+      <div class="log-icon">${channelIcon(l.channel)}</div>
+      <div>
+        <div class="log-contact">${l.contact_name} — ${l.invoice_number}</div>
+        <div class="log-detail">Stage ${l.stage} · ${l.channel}</div>
+      </div>
+      <div class="log-time">${fmtTime(l.sent_at)}</div>
+    </div>`).join('') : `<div class="empty">No messages sent yet</div>`;
+
+  document.getElementById('main').innerHTML = `
+    ${data.paused ? `<div class="pause-banner">⏸ Chasing is paused — no messages will be sent until you resume.</div>` : ''}
+    <div class="stats-grid">
+      <div class="stat-card highlight">
+        <div class="label">Total overdue</div>
+        <div class="value">${fmtMoney(stats.total_value, currency)}</div>
+        <div class="sub">${stats.total_overdue} invoice${stats.total_overdue !== 1 ? 's' : ''}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Being chased</div>
+        <div class="value">${stats.chased_count}</div>
+        <div class="sub">messages sent</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Recovered this session</div>
+        <div class="value">${fmtMoney(stats.recovered, currency)}</div>
+        <div class="sub">${stats.paid_count} invoice${stats.paid_count !== 1 ? 's' : ''} paid</div>
+      </div>
+    </div>
+
+    <div class="section-header">
+      <h2>Overdue invoices</h2>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Client</th><th>Invoice</th><th>Amount</th>
+          <th>Overdue</th><th>Chase stage</th><th>Channels</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+
+    <div class="section-header">
+      <h2>Recent messages sent</h2>
+    </div>
+    <div class="log-list">${logItems}</div>`;
+}
+
+function renderDisconnected() {
+  document.getElementById('header-actions').innerHTML =
+    `<a href="/logout" class="btn-ghost btn-sm" style="text-decoration:none;display:inline-flex;align-items:center">Sign out</a>`;
+  document.getElementById('main').innerHTML = `
+    <div class="connect-prompt">
+      <h2>Connect your Xero account</h2>
+      <p>PaidUp chases your overdue invoices automatically via WhatsApp and email<br>
+         — so you get paid without the awkward follow-ups.</p>
+      <a href="/xero/connect">Connect Xero →</a>
+      <div style="margin-top:30px;color:#777;font-size:13px">
+        No Xero? Works with Sage, QuickBooks or a spreadsheet too —
+        <button class="btn-ghost btn-sm" onclick="openAddForm()">+ Add invoice</button>
+        <button class="btn-ghost btn-sm" onclick="triggerCsvImport()">Import CSV</button>
+      </div>
+    </div>`;
+}
+
+async function load() {
+  try {
+    state = await api('GET', '/api/status');
+    if (state.connected) renderConnected(state);
+    else renderDisconnected();
+  } catch (e) {
+    document.getElementById('main').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+  }
+}
+
+// Check for URL params (post-auth redirect)
+const params = new URLSearchParams(location.search);
+if (params.get('connected')) { history.replaceState({}, '', '/app'); toast('Xero connected!'); }
+if (params.get('error'))     { history.replaceState({}, '', '/app'); toast(params.get('error'), true); }
+
+load();
+setInterval(load, 30000); // refresh every 30s
+</script>
+</body>
+</html>

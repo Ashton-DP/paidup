@@ -117,7 +117,7 @@ app.use(session({
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || '';
 const AUTH_REQUIRED = !!DASHBOARD_PASSWORD;
 const PUBLIC_PATHS = new Set([
-  '/healthz', '/login', '/logout',
+  '/', '/index.html', '/healthz', '/login', '/logout', '/api/waitlist',
   '/xero/connect', '/xero/callback', '/xero/webhook', '/twilio/reply',
 ]);
 function requireAuth(req, res, next) {
@@ -137,21 +137,35 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Public health check for the host's uptime probe (no auth).
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
+// The dashboard app (gated by requireAuth above). The marketing landing page
+// is served at / from public/index.html by express.static.
+app.get('/app', (req, res) => res.sendFile(path.join(__dirname, 'views', 'dashboard.html')));
+
+// Landing-page waitlist sign-up (public).
+app.post('/api/waitlist', (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return res.status(400).json({ error: 'Please enter a valid email address' });
+  }
+  db.prepare(`INSERT OR IGNORE INTO waitlist (email) VALUES (?)`).run(email);
+  res.json({ ok: true });
+});
+
 // ── Login ──────────────────────────────────────────────────────────────────
 app.get('/login', (req, res) => {
-  if (!AUTH_REQUIRED || req.session?.authed) return res.redirect('/');
+  if (!AUTH_REQUIRED || req.session?.authed) return res.redirect('/app');
   res.type('html').send(loginPage(!!req.query.error));
 });
 app.post('/login', (req, res) => {
   if (AUTH_REQUIRED && req.body.password === DASHBOARD_PASSWORD) {
     req.session.authed = true;
-    return res.redirect('/');
+    return res.redirect('/app');
   }
   res.redirect('/login?error=1');
 });
 app.get('/logout', (req, res) => {
   if (req.session) req.session.authed = false;
-  res.redirect('/login');
+  res.redirect('/');
 });
 
 // ── Xero OAuth ─────────────────────────────────────────────────────────────
@@ -165,14 +179,14 @@ app.get('/xero/callback', async (req, res) => {
   try {
     const tenant = await handleCallback(`${process.env.BASE_URL}/xero/callback?${new URLSearchParams(req.query)}`);
     req.session.tenantId = tenant.tenantId;
-    res.redirect('/?connected=1');
+    res.redirect('/app?connected=1');
   } catch (err) {
     console.error('[xero callback] FULL ERROR ↓');
     console.error('  message :', err && err.message);
     console.error('  name    :', err && err.name);
     console.error('  body    :', err && (err.body || err.response?.body || err.data));
     console.error('  stack   :', err && err.stack);
-    res.redirect('/?error=xero_auth_failed');
+    res.redirect('/app?error=xero_auth_failed');
   }
 });
 
