@@ -372,6 +372,29 @@ app.post('/api/invoice/:id/paid', (req, res) => {
   res.json({ ok: true });
 });
 
+// Remove a single invoice (and its chase history). Xero-synced ones return on
+// the next sync; manual ones are gone for good.
+app.delete('/api/invoice/:id', (req, res) => {
+  db.transaction(() => {
+    db.prepare(`DELETE FROM chase_log WHERE invoice_id = ?`).run(req.params.id);
+    db.prepare(`DELETE FROM invoices WHERE id = ?`).run(req.params.id);
+  })();
+  res.json({ ok: true });
+});
+
+// Wipe everything to a clean slate (invoices, connections, history) — keeps
+// app settings and the marketing waitlist.
+app.post('/api/reset', (req, res) => {
+  db.transaction(() => {
+    db.prepare(`DELETE FROM replies`).run();
+    db.prepare(`DELETE FROM chase_log`).run();
+    db.prepare(`DELETE FROM invoices`).run();
+    db.prepare(`DELETE FROM suppressions`).run();
+    db.prepare(`DELETE FROM tenants`).run();
+  })();
+  res.json({ ok: true });
+});
+
 // ── Scheduled jobs ─────────────────────────────────────────────────────────
 
 // Sync invoices from Xero every day at 7am

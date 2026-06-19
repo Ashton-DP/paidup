@@ -285,6 +285,11 @@
       <button type="button" class="btn-ghost" onclick="closeSettings()">Cancel</button>
       <button type="submit" class="btn-primary">Save settings</button>
     </div>
+    <div style="margin-top:18px;padding-top:16px;border-top:1px solid #2a2a35">
+      <div class="preview-label" style="color:#ff9b9b">Danger zone</div>
+      <button type="button" class="btn-danger btn-sm" style="margin-top:8px" onclick="resetData()">Clear all data</button>
+      <div style="font-size:12px;color:#666;margin-top:8px">Wipes every invoice, the Xero connection and chase history. Your settings are kept.</div>
+    </div>
   </form>
 </div>
 
@@ -440,6 +445,22 @@ async function snooze(id) {
   await load();
 }
 
+async function deleteInvoice(id) {
+  if (!confirm('Remove this invoice from PaidUp?\n(Xero-synced invoices come back on the next sync; manual ones are gone.)')) return;
+  await api('DELETE', `/api/invoice/${id}`);
+  toast('Invoice removed');
+  await load();
+}
+
+async function resetData() {
+  if (!confirm('Delete ALL invoices, the Xero connection and chase history? This cannot be undone.')) return;
+  if (!confirm('Are you absolutely sure? This wipes everything to a clean slate.')) return;
+  await api('POST', '/api/reset');
+  toast('All data cleared — starting fresh');
+  closeSettings();
+  await load();
+}
+
 async function togglePause(paused) {
   await api('POST', '/api/pause', { paused });
   toast(paused ? 'Chasing paused — no messages will send' : 'Chasing resumed');
@@ -548,6 +569,7 @@ function renderConnected(data) {
           <button class="btn-primary btn-sm" onclick="openChase('${inv.id}')">Chase</button>
           <button class="btn-success btn-sm" onclick="markPaid('${inv.id}')">Paid</button>
           <button class="btn-ghost btn-sm" onclick="snooze('${inv.id}')">Snooze 5d</button>
+          <button class="btn-ghost btn-sm" title="Remove" onclick="deleteInvoice('${inv.id}')">✕</button>
         </div>
       </td>
     </tr>`).join('') : `<tr><td colspan="7" class="empty">No overdue invoices — great!</td></tr>`;
