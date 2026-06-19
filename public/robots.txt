@@ -5,4 +5,4 @@ Disallow: /api/
 Disallow: /login
 Disallow: /signup
 
-Sitemap: https://paidup.co.za/sitemap.xml
+Sitemap: https://paid-up.co.za/sitemap.xml
