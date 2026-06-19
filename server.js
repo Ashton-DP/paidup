@@ -9,7 +9,8 @@ const cron = require('node-cron');
 const db = require('./src/db');
 const { getAuthUrl, handleCallback, syncOverdueInvoices,
         validateWebhook, markPaid } = require('./src/xero');
-const { runChaseAll, runChaseForTenant, handleReply } = require('./src/chaser');
+const { runChaseAll, runChaseForTenant, handleReply,
+        previewChase, sendChaseForInvoice } = require('./src/chaser');
 const { parseReplyIntent } = require('./src/whatsapp');
 const { isChasingPaused, setChasingPaused } = require('./src/safety');
 const { csvToInvoices } = require('./src/csv');
@@ -328,6 +329,23 @@ app.post('/api/chase-now', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Preview the AI message(s) for one invoice without sending.
+app.post('/api/invoice/:id/preview', async (req, res) => {
+  try { res.json(await previewChase(req.params.id)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Send the chase for one invoice (operator override of the cron cadence).
+app.post('/api/invoice/:id/send', async (req, res) => {
+  try {
+    const r = await sendChaseForInvoice(req.params.id);
+    if (!r.sent.length) {
+      return res.status(400).json({ error: 'Nothing sent — no contactable channel, or the contact opted out' });
+    }
+    res.json(r);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/invoice/:id/snooze', (req, res) => {

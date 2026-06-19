@@ -137,4 +137,73 @@ function handleReply({ tenantId, fromNumber, body, intent }) {
   }
 }
 
-module.exports = { runChaseForTenant, runChaseAll, handleReply };
+// ── Single-invoice manual chasing (operator-driven, with preview) ────────────
+
+// The stage a manual chase should use: the natural next stage if due, else the
+// next stage up (capped at final) so the operator can always escalate by hand.
+function computeManualStage(invoice) {
+  return nextChaseStage(invoice) || Math.min((invoice.chase_stage || 0) + 1, 3) || 1;
+}
+
+function loadInvoiceWithSender(invoiceId) {
+  const invoice = db.prepare(`SELECT * FROM invoices WHERE id = ?`).get(invoiceId);
+  if (!invoice) throw new Error('Invoice not found');
+  const tenant = db.prepare(`SELECT * FROM tenants WHERE id = ?`).get(invoice.tenant_id);
+  return { invoice, senderName: tenant?.name || 'PaidUp' };
+}
+
+// Generate (but DO NOT send) the messages for one invoice, so the operator can
+// review before sending.
+async function previewChase(invoiceId) {
+  const { invoice, senderName } = loadInvoiceWithSender(invoiceId);
+  const stage = computeManualStage(invoice);
+  const out = { stage, contact_name: invoice.contact_name };
+  if (invoice.contact_email) {
+    out.email = await generateChaseMessage({ invoice, stage, channel: 'email', senderName });
+    out.email_suppressed = isSuppressed(invoice.tenant_id, 'email', emailKey(invoice.contact_email));
+  }
+  if (invoice.contact_phone) {
+    out.whatsapp = await generateChaseMessage({ invoice, stage, channel: 'whatsapp', senderName });
+    out.whatsapp_suppressed = isSuppressed(invoice.tenant_id, 'whatsapp', phoneKey(invoice.contact_phone));
+  }
+  return out;
+}
+
+// Send the chase for ONE invoice (operator override — ignores the global pause,
+// but still never messages an opted-out channel). Advances the stage.
+async function sendChaseForInvoice(invoiceId) {
+  const { invoice, senderName } = loadInvoiceWithSender(invoiceId);
+  const stage = computeManualStage(invoice);
+  const sent = [];
+
+  const errors = [];
+
+  if (invoice.contact_email && !isSuppressed(invoice.tenant_id, 'email', emailKey(invoice.contact_email))) {
+    try {
+      const msg = await generateChaseMessage({ invoice, stage, channel: 'email', senderName });
+      await sendChaseEmail({ to: invoice.contact_email, toName: invoice.contact_name,
+                             rawMessage: msg, invoiceNumber: invoice.invoice_number, senderName });
+      logSend({ invoice, stage, channel: 'email', recipient: invoice.contact_email, body: msg });
+      sent.push('email');
+    } catch (e) { errors.push('email: ' + (e.message || e)); }
+  }
+
+  if (invoice.contact_phone && !isSuppressed(invoice.tenant_id, 'whatsapp', phoneKey(invoice.contact_phone))) {
+    try {
+      const msg = await generateChaseMessage({ invoice, stage, channel: 'whatsapp', senderName });
+      const ok = await sendWhatsApp({ to: invoice.contact_phone, message: msg, invoiceNumber: invoice.invoice_number });
+      if (ok) { logSend({ invoice, stage, channel: 'whatsapp', recipient: invoice.contact_phone, body: msg }); sent.push('whatsapp'); }
+    } catch (e) { errors.push('whatsapp: ' + (e.message || e)); }
+  }
+
+  if (sent.length) {
+    db.prepare(`UPDATE invoices SET chase_stage = ?, last_chased_at = datetime('now'),
+                updated_at = datetime('now') WHERE id = ?`).run(stage, invoiceId);
+  }
+  return { stage, sent, errors };
+}
+
+module.exports = {
+  runChaseForTenant, runChaseAll, handleReply,
+  previewChase, sendChaseForInvoice,
+};

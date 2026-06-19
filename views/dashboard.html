@@ -148,17 +148,24 @@
     }
     .log-item {
       display: flex;
-      align-items: flex-start;
-      gap: 12px;
+      flex-direction: column;
       padding: 12px 16px;
       border-bottom: 1px solid #1e1e28;
       font-size: 12px;
+      cursor: pointer;
     }
+    .log-item:hover { background: #1c1c25; }
     .log-item:last-child { border-bottom: none; }
+    .log-row { display: flex; align-items: flex-start; gap: 12px; width: 100%; }
     .log-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
     .log-contact { font-weight: 500; color: #ddd; }
     .log-detail  { color: #666; margin-top: 2px; }
     .log-time    { margin-left: auto; color: #444; white-space: nowrap; flex-shrink: 0; }
+    .log-body {
+      display: none; white-space: pre-wrap; font-size: 12px; color: #bbb;
+      margin-top: 10px; padding-top: 10px; border-top: 1px solid #242430; line-height: 1.5;
+    }
+    .log-item.expanded .log-body { display: block; }
 
     .empty { text-align: center; padding: 40px; color: #555; font-size: 13px; }
 
@@ -197,6 +204,14 @@
     }
     .modal input:focus { outline: none; border-color: #6c8fff; }
     .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+
+    .preview-block { margin-bottom: 14px; }
+    .preview-label { font-size: 11px; color: #888; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+    .preview-msg {
+      background: #0f0f13; border: 1px solid #2a2a35; border-radius: 8px; padding: 12px;
+      font-size: 13px; color: #ddd; white-space: pre-wrap; font-family: inherit;
+      max-height: 220px; overflow: auto; line-height: 1.5;
+    }
 
     .toast {
       position: fixed;
@@ -251,6 +266,18 @@
       <button type="submit" class="btn-primary">Add invoice</button>
     </div>
   </form>
+</div>
+
+<div class="modal-overlay" id="chase-modal">
+  <div class="modal">
+    <h3>Preview &amp; send reminder</h3>
+    <div class="hint" id="chase-sub"></div>
+    <div id="chase-preview"><div class="empty">Generating…</div></div>
+    <div class="modal-actions">
+      <button type="button" class="btn-ghost" onclick="closeChase()">Cancel</button>
+      <button type="button" class="btn-primary" id="chase-send-btn" onclick="confirmSendChase()">Send now</button>
+    </div>
+  </div>
 </div>
 
 <input type="file" id="csv-input" accept=".csv,text/csv" style="display:none"
@@ -321,7 +348,53 @@ async function syncInvoices() {
   }
 }
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+let _chaseInvoiceId = null;
+async function openChase(id) {
+  _chaseInvoiceId = id;
+  document.getElementById('chase-modal').style.display = 'flex';
+  document.getElementById('chase-sub').textContent = '';
+  document.getElementById('chase-preview').innerHTML = '<div class="empty">Generating message…</div>';
+  const sendBtn = document.getElementById('chase-send-btn');
+  sendBtn.disabled = true;
+  try {
+    const p = await api('POST', `/api/invoice/${id}/preview`);
+    document.getElementById('chase-sub').textContent = `${p.contact_name} · stage ${p.stage} of 3`;
+    let html = '';
+    if (p.email)    html += previewBlock('✉️ Email', p.email, p.email_suppressed);
+    if (p.whatsapp) html += previewBlock('💬 WhatsApp', p.whatsapp, p.whatsapp_suppressed);
+    if (!p.email && !p.whatsapp) html = '<div class="empty">No email or phone on this invoice — nothing to send.</div>';
+    document.getElementById('chase-preview').innerHTML = html;
+    sendBtn.disabled = !(p.email || p.whatsapp);
+  } catch (e) {
+    document.getElementById('chase-preview').innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+function previewBlock(label, msg, suppressed) {
+  return `<div class="preview-block">
+    <div class="preview-label">${label}${suppressed ? ' <span style="color:#ff9b9b">— opted out, will be skipped</span>' : ''}</div>
+    <pre class="preview-msg">${escapeHtml(msg)}</pre>
+  </div>`;
+}
+function closeChase() { document.getElementById('chase-modal').style.display = 'none'; _chaseInvoiceId = null; }
+async function confirmSendChase() {
+  if (!_chaseInvoiceId) return;
+  const btn = document.getElementById('chase-send-btn');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const r = await api('POST', `/api/invoice/${_chaseInvoiceId}/send`);
+    toast(`Reminder sent via ${r.sent.join(' + ')}`);
+    closeChase();
+    await load();
+  } catch (e) { toast(e.message, true); btn.disabled = false; }
+  btn.textContent = 'Send now';
+}
+
 async function chaseNow() {
+  if (!confirm('Send reminders to ALL eligible overdue invoices now? This sends real messages.')) return;
   const btn = document.getElementById('btn-chase');
   if (btn) { btn.disabled = true; btn.textContent = 'Chasing…'; }
   try {
@@ -420,6 +493,7 @@ function renderConnected(data) {
       <td>${inv.contact_phone ? '💬' : ''}${inv.contact_email ? ' ✉️' : ''}</td>
       <td>
         <div class="actions-cell">
+          <button class="btn-primary btn-sm" onclick="openChase('${inv.id}')">Chase</button>
           <button class="btn-success btn-sm" onclick="markPaid('${inv.id}')">Paid</button>
           <button class="btn-ghost btn-sm" onclick="snooze('${inv.id}')">Snooze 5d</button>
         </div>
@@ -427,13 +501,16 @@ function renderConnected(data) {
     </tr>`).join('') : `<tr><td colspan="7" class="empty">No overdue invoices — great!</td></tr>`;
 
   const logItems = recent.length ? recent.map(l => `
-    <div class="log-item">
-      <div class="log-icon">${channelIcon(l.channel)}</div>
-      <div>
-        <div class="log-contact">${l.contact_name} — ${l.invoice_number}</div>
-        <div class="log-detail">Stage ${l.stage} · ${l.channel}</div>
+    <div class="log-item" onclick="this.classList.toggle('expanded')">
+      <div class="log-row">
+        <div class="log-icon">${channelIcon(l.channel)}</div>
+        <div>
+          <div class="log-contact">${l.contact_name} — ${l.invoice_number}</div>
+          <div class="log-detail">Stage ${l.stage} · ${l.channel} · tap to view message</div>
+        </div>
+        <div class="log-time">${fmtTime(l.sent_at)}</div>
       </div>
-      <div class="log-time">${fmtTime(l.sent_at)}</div>
+      <div class="log-body">${escapeHtml(l.message_body || '(no content stored)')}</div>
     </div>`).join('') : `<div class="empty">No messages sent yet</div>`;
 
   document.getElementById('main').innerHTML = `
