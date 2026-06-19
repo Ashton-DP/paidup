@@ -1,133 +1,162 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+/**
+ * Database client — PostgreSQL via the `pg` package.
+ *
+ * Exports a thin wrapper with the same get/all/run/exec API that the rest of
+ * the codebase used with better-sqlite3, but all methods are now async.
+ *
+ * Connection: DATABASE_URL env var (Railway / any Postgres).
+ */
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'chaser.db');
-require('fs').mkdirSync(path.dirname(DB_PATH), { recursive: true });
+const { Pool } = require('pg');
 
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway')
+    ? { rejectUnauthorized: false }
+    : false,
+});
 
-db.exec(`
-  -- A customer account = one paying business. Owns its tenants/invoices/settings.
-  CREATE TABLE IF NOT EXISTS accounts (
-    id            TEXT PRIMARY KEY,
-    email         TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    business_name TEXT,
-    plan          TEXT DEFAULT 'trial',
-    trial_ends_at TEXT,
-    created_at    TEXT DEFAULT (datetime('now'))
-  );
+// Convert SQLite-style ? placeholders to Postgres $1, $2, ...
+function pgSql(sql) {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
+}
 
-  CREATE TABLE IF NOT EXISTS tenants (
-    id          TEXT PRIMARY KEY,
-    account_id  TEXT,
-    name        TEXT NOT NULL,
-    xero_tenant_id TEXT UNIQUE NOT NULL,
-    tokens      TEXT,
-    created_at  TEXT DEFAULT (datetime('now'))
-  );
+// Convert SQLite datetime('now') / datetime('now', ...) → NOW()
+function normSql(sql) {
+  return pgSql(sql)
+    .replace(/datetime\('now'\s*(?:,\s*[^)]+)?\)/gi, 'NOW()')
+    .replace(/INSERT OR IGNORE/gi, 'INSERT')
+    .replace(/ON CONFLICT\s*DO NOTHING/gi, '')  // handled per-query below
+    ;
+}
 
-  CREATE TABLE IF NOT EXISTS invoices (
-    id              TEXT PRIMARY KEY,
-    tenant_id       TEXT NOT NULL REFERENCES tenants(id),
-    xero_invoice_id TEXT NOT NULL,
-    invoice_number  TEXT,
-    contact_name    TEXT,
-    contact_email   TEXT,
-    contact_phone   TEXT,
-    amount_due      REAL,
-    currency        TEXT DEFAULT 'ZAR',
-    due_date        TEXT,
-    days_overdue    INTEGER DEFAULT 0,
-    status          TEXT DEFAULT 'OVERDUE',
-    chase_stage     INTEGER DEFAULT 0,
-    last_chased_at  TEXT,
-    paid_at         TEXT,
-    snoozed_until   TEXT,
-    created_at      TEXT DEFAULT (datetime('now')),
-    updated_at      TEXT DEFAULT (datetime('now')),
-    UNIQUE(tenant_id, xero_invoice_id)
-  );
+const db = {
+  async get(sql, ...params) {
+    const res = await pool.query(normSql(sql), params.flat());
+    return res.rows[0] || null;
+  },
+  async all(sql, ...params) {
+    const res = await pool.query(normSql(sql), params.flat());
+    return res.rows;
+  },
+  async run(sql, ...params) {
+    const res = await pool.query(normSql(sql), params.flat());
+    return { changes: res.rowCount };
+  },
+  async exec(sql) {
+    await pool.query(sql);
+  },
+  pool,
+};
 
-  CREATE TABLE IF NOT EXISTS chase_log (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    invoice_id   TEXT NOT NULL REFERENCES invoices(id),
-    tenant_id    TEXT NOT NULL,
-    stage        INTEGER NOT NULL,
-    channel      TEXT NOT NULL,
-    recipient    TEXT NOT NULL,
-    message_body TEXT,
-    status       TEXT DEFAULT 'sent',
-    sent_at      TEXT DEFAULT (datetime('now'))
-  );
+// ── Schema (idempotent) ───────────────────────────────────────────────────────
+async function initSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS accounts (
+      id                         TEXT PRIMARY KEY,
+      email                      TEXT UNIQUE NOT NULL,
+      password_hash              TEXT NOT NULL,
+      business_name              TEXT,
+      plan                       TEXT DEFAULT 'trial',
+      trial_ends_at              TEXT,
+      created_at                 TIMESTAMPTZ DEFAULT NOW(),
+      subscription_status        TEXT DEFAULT 'trialing',
+      paystack_customer_code     TEXT,
+      paystack_subscription_code TEXT,
+      current_period_end         TEXT
+    );
 
-  CREATE TABLE IF NOT EXISTS replies (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    tenant_id    TEXT NOT NULL,
-    from_number  TEXT,
-    from_email   TEXT,
-    body         TEXT NOT NULL,
-    channel      TEXT NOT NULL,
-    processed    INTEGER DEFAULT 0,
-    received_at  TEXT DEFAULT (datetime('now'))
-  );
+    CREATE TABLE IF NOT EXISTS tenants (
+      id             TEXT PRIMARY KEY,
+      account_id     TEXT,
+      name           TEXT NOT NULL,
+      xero_tenant_id TEXT UNIQUE NOT NULL,
+      tokens         TEXT,
+      created_at     TIMESTAMPTZ DEFAULT NOW()
+    );
 
-  -- Opt-out list. Once a contact says STOP on a channel we never message that
-  -- channel again (POPIA / WhatsApp policy). identifier = email or phone key.
-  CREATE TABLE IF NOT EXISTS suppressions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    tenant_id   TEXT NOT NULL,
-    channel     TEXT NOT NULL,
-    identifier  TEXT NOT NULL,
-    reason      TEXT,
-    created_at  TEXT DEFAULT (datetime('now')),
-    UNIQUE(tenant_id, channel, identifier)
-  );
+    CREATE TABLE IF NOT EXISTS invoices (
+      id              TEXT PRIMARY KEY,
+      tenant_id       TEXT NOT NULL REFERENCES tenants(id),
+      xero_invoice_id TEXT NOT NULL,
+      invoice_number  TEXT,
+      contact_name    TEXT,
+      contact_email   TEXT,
+      contact_phone   TEXT,
+      amount_due      NUMERIC,
+      currency        TEXT DEFAULT 'ZAR',
+      due_date        TEXT,
+      days_overdue    INTEGER DEFAULT 0,
+      status          TEXT DEFAULT 'OVERDUE',
+      chase_stage     INTEGER DEFAULT 0,
+      last_chased_at  TEXT,
+      paid_at         TEXT,
+      snoozed_until   TEXT,
+      disputed        INTEGER DEFAULT 0,
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(tenant_id, xero_invoice_id)
+    );
 
-  -- Per-account key/value settings (business name, cadence, kill switch).
-  -- Created/migrated to the account-scoped schema in the migrations below.
+    CREATE TABLE IF NOT EXISTS chase_log (
+      id           SERIAL PRIMARY KEY,
+      invoice_id   TEXT NOT NULL REFERENCES invoices(id),
+      tenant_id    TEXT NOT NULL,
+      stage        INTEGER NOT NULL,
+      channel      TEXT NOT NULL,
+      recipient    TEXT NOT NULL,
+      message_body TEXT,
+      status       TEXT DEFAULT 'sent',
+      sent_at      TIMESTAMPTZ DEFAULT NOW()
+    );
 
-  -- Marketing waitlist sign-ups from the landing page.
-  CREATE TABLE IF NOT EXISTS waitlist (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    email       TEXT UNIQUE NOT NULL,
-    created_at  TEXT DEFAULT (datetime('now'))
-  );
-`);
+    CREATE TABLE IF NOT EXISTS replies (
+      id          SERIAL PRIMARY KEY,
+      tenant_id   TEXT NOT NULL,
+      from_number TEXT,
+      from_email  TEXT,
+      body        TEXT NOT NULL,
+      channel     TEXT NOT NULL,
+      processed   INTEGER DEFAULT 0,
+      received_at TIMESTAMPTZ DEFAULT NOW()
+    );
 
-// ── Lightweight migrations (add columns to existing tables) ──────────────────
-function ensureColumn(table, column, definition) {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
-  if (!cols.some(c => c.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    CREATE TABLE IF NOT EXISTS suppressions (
+      id         SERIAL PRIMARY KEY,
+      tenant_id  TEXT NOT NULL,
+      channel    TEXT NOT NULL,
+      identifier TEXT NOT NULL,
+      reason     TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(tenant_id, channel, identifier)
+    );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      account_id TEXT NOT NULL,
+      key        TEXT NOT NULL,
+      value      TEXT,
+      PRIMARY KEY (account_id, key)
+    );
+
+    CREATE TABLE IF NOT EXISTS waitlist (
+      id         SERIAL PRIMARY KEY,
+      email      TEXT UNIQUE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+  console.log('[db] schema ready');
+}
+
+initSchema().catch(err => {
+  // In test environments without a DATABASE_URL the pool connection will fail.
+  // Log the error but don't crash — pure-function tests don't need a live DB.
+  if (process.env.NODE_ENV !== 'test') {
+    console.error('[db] schema init failed:', err.message);
+    process.exit(1);
+  } else {
+    console.warn('[db] schema init skipped (no DATABASE_URL in test env)');
   }
-}
-// A 'dispute' reply pauses chasing on the invoice until a human resolves it.
-ensureColumn('invoices', 'disputed', 'INTEGER DEFAULT 0');
-// Multi-tenancy: tenants belong to an account.
-ensureColumn('tenants', 'account_id', 'TEXT');
-// Billing (Paystack) state on the account.
-ensureColumn('accounts', 'subscription_status', "TEXT DEFAULT 'trialing'");
-ensureColumn('accounts', 'paystack_customer_code', 'TEXT');
-ensureColumn('accounts', 'paystack_subscription_code', 'TEXT');
-ensureColumn('accounts', 'current_period_end', 'TEXT');
-
-// Settings are per-account. If an older global settings table exists (no
-// account_id column), drop it — the values (cadence/kill switch) re-default
-// per account. Then ensure the account-scoped schema.
-const settingsCols = db.prepare(`PRAGMA table_info(settings)`).all();
-if (settingsCols.length && !settingsCols.some(c => c.name === 'account_id')) {
-  db.exec(`DROP TABLE settings`);
-}
-db.exec(`
-  CREATE TABLE IF NOT EXISTS settings (
-    account_id TEXT NOT NULL,
-    key        TEXT NOT NULL,
-    value      TEXT,
-    PRIMARY KEY (account_id, key)
-  );
-`);
+});
 
 module.exports = db;

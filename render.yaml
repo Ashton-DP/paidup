@@ -20,16 +20,10 @@ services:
   - type: web
     name: paidup
     runtime: node
-    plan: starter                 # paid (~$7/mo) — always-on (cron fires) + allows a disk
+    plan: free                    # DB is on Railway Postgres — no disk needed here
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /healthz
-    # Persistent disk so the SQLite DB survives restarts/redeploys.
-    # Mounted where db.js writes: <repo>/data → /opt/render/project/src/data
-    disk:
-      name: paidup-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
@@ -50,6 +44,8 @@ services:
         sync: false
       - key: PAYSTACK_PLAN_BUSINESS
         sync: false
+      - key: DATABASE_URL
+        sync: false                   # paste Railway Postgres connection string
       - key: GEMINI_API_KEY
         sync: false
       - key: RESEND_API_KEY

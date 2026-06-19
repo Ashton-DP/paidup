@@ -26,32 +26,41 @@ function emailKey(raw) {
 
 // ── Suppression list (opt-outs) ──────────────────────────────────────────────
 
-function addSuppression(tenantId, channel, identifier, reason = 'stop') {
+async function addSuppression(tenantId, channel, identifier, reason = 'stop') {
   if (!identifier) return false;
-  db.prepare(`INSERT OR IGNORE INTO suppressions (tenant_id, channel, identifier, reason)
-              VALUES (?, ?, ?, ?)`).run(tenantId, channel, identifier, reason);
+  await db.run(
+    `INSERT INTO suppressions (tenant_id, channel, identifier, reason)
+     VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+    tenantId, channel, identifier, reason
+  );
   return true;
 }
 
-function isSuppressed(tenantId, channel, identifier) {
+async function isSuppressed(tenantId, channel, identifier) {
   if (!identifier) return false;
-  const row = db.prepare(`SELECT 1 FROM suppressions
-                          WHERE tenant_id = ? AND channel = ? AND identifier = ?`)
-    .get(tenantId, channel, identifier);
+  const row = await db.get(
+    `SELECT 1 FROM suppressions WHERE tenant_id = ? AND channel = ? AND identifier = ?`,
+    tenantId, channel, identifier
+  );
   return !!row;
 }
 
 // ── Global kill switch ───────────────────────────────────────────────────────
 
-function isChasingPaused(accountId) {
-  const row = db.prepare(`SELECT value FROM settings WHERE account_id = ? AND key = 'chasing_paused'`).get(accountId);
+async function isChasingPaused(accountId) {
+  const row = await db.get(
+    `SELECT value FROM settings WHERE account_id = ? AND key = 'chasing_paused'`,
+    accountId
+  );
   return row?.value === '1';
 }
 
-function setChasingPaused(accountId, paused) {
-  db.prepare(`INSERT INTO settings (account_id, key, value) VALUES (?, 'chasing_paused', ?)
-              ON CONFLICT(account_id, key) DO UPDATE SET value = excluded.value`)
-    .run(accountId, paused ? '1' : '0');
+async function setChasingPaused(accountId, paused) {
+  await db.run(
+    `INSERT INTO settings (account_id, key, value) VALUES (?, 'chasing_paused', ?)
+     ON CONFLICT(account_id, key) DO UPDATE SET value = excluded.value`,
+    accountId, paused ? '1' : '0'
+  );
   return isChasingPaused(accountId);
 }
 

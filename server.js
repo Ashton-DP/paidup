@@ -23,49 +23,51 @@ const app = express();
 
 // Pick the org to show/operate on FOR THIS ACCOUNT: the one with the most
 // overdue invoices, tie-broken by most recently connected.
-function activeTenant(accountId) {
-  return db.prepare(`
+async function activeTenant(accountId) {
+  return db.get(`
     SELECT t.* FROM tenants t
     LEFT JOIN invoices i ON i.tenant_id = t.id AND i.status = 'OVERDUE'
-    WHERE t.account_id IS ?
+    WHERE t.account_id IS NOT DISTINCT FROM ?
     GROUP BY t.id
     ORDER BY COUNT(i.id) DESC, t.created_at DESC
     LIMIT 1
-  `).get(accountId || null);
+  `, accountId || null);
 }
 
 const genId = () => `${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
 // Manual / CSV invoices attach to the account's active org, or to a local "My
 // Business" tenant created on demand — so PaidUp is usable with no Xero.
-function targetTenantForManual(accountId) {
-  const existing = activeTenant(accountId);
+async function targetTenantForManual(accountId) {
+  const existing = await activeTenant(accountId);
   if (existing) return existing;
   const id = genId();
-  db.prepare(`INSERT INTO tenants (id, account_id, name, xero_tenant_id, tokens)
-              VALUES (?, ?, 'My Business', ?, NULL)`).run(id, accountId || null, 'local-' + id);
-  return db.prepare(`SELECT * FROM tenants WHERE id = ?`).get(id);
+  await db.run(
+    `INSERT INTO tenants (id, account_id, name, xero_tenant_id, tokens) VALUES (?, ?, 'My Business', ?, NULL)`,
+    id, accountId || null, 'local-' + id
+  );
+  return db.get(`SELECT * FROM tenants WHERE id = ?`, id);
 }
 
 // Return an invoice only if it belongs to this account (else null → 404).
-function ownedInvoice(invoiceId, accountId) {
-  return db.prepare(`
+async function ownedInvoice(invoiceId, accountId) {
+  return db.get(`
     SELECT i.* FROM invoices i JOIN tenants t ON t.id = i.tenant_id
-    WHERE i.id = ? AND t.account_id IS ?
-  `).get(invoiceId, accountId || null);
+    WHERE i.id = ? AND t.account_id IS NOT DISTINCT FROM ?
+  `, invoiceId, accountId || null);
 }
 
 // Apply a Paystack webhook event to the matching account's subscription.
-function handlePaystackEvent(evt) {
+async function handlePaystackEvent(evt) {
   const { event, data } = evt || {};
   if (!event || !data) return;
   const email = data.customer?.email;
-  const acc = (email && accounts.findAccountByEmail(email))
-    || (data.metadata?.accountId ? accounts.getAccount(data.metadata.accountId) : null);
+  const acc = (email && await accounts.findAccountByEmail(email))
+    || (data.metadata?.accountId ? await accounts.getAccount(data.metadata.accountId) : null);
   if (!acc) { console.warn('[paystack] no account matched for', event); return; }
 
   if (event === 'charge.success' || event === 'subscription.create') {
-    accounts.setSubscription(acc.id, {
+    await accounts.setSubscription(acc.id, {
       plan: data.metadata?.plan || data.plan?.name?.toLowerCase(),
       status: 'active',
       customerCode: data.customer?.customer_code,
@@ -74,21 +76,23 @@ function handlePaystackEvent(evt) {
     });
     console.log('[paystack] activated', acc.email);
   } else if (event === 'invoice.payment_failed') {
-    accounts.setSubscription(acc.id, { status: 'past_due' });
+    await accounts.setSubscription(acc.id, { status: 'past_due' });
   } else if (event === 'subscription.disable' || event === 'subscription.not_renew') {
-    accounts.setSubscription(acc.id, { status: 'cancelled' });
+    await accounts.setSubscription(acc.id, { status: 'cancelled' });
   }
 }
 
-function insertManualInvoice(tenantId, f) {
+async function insertManualInvoice(tenantId, f) {
   const over = f.due_date ? daysOverdue(f.due_date) : 0;
-  db.prepare(`INSERT INTO invoices
-    (id, tenant_id, xero_invoice_id, invoice_number, contact_name, contact_email,
-     contact_phone, amount_due, currency, due_date, days_overdue, status, chase_stage)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OVERDUE', 0)`).run(
+  await db.run(
+    `INSERT INTO invoices
+      (id, tenant_id, xero_invoice_id, invoice_number, contact_name, contact_email,
+       contact_phone, amount_due, currency, due_date, days_overdue, status, chase_stage)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OVERDUE', 0)`,
     genId(), tenantId, 'manual-' + genId(), f.invoice_number || null,
     f.contact_name || 'Unknown', f.contact_email || null, f.contact_phone || null,
-    f.amount_due, (f.currency || 'ZAR').toUpperCase(), f.due_date, over);
+    f.amount_due, (f.currency || 'ZAR').toUpperCase(), f.due_date, over
+  );
 }
 
 const AUTH_STYLES = `
@@ -180,10 +184,10 @@ const PUBLIC_PATHS = new Set([
   '/xero/connect', '/xero/callback', '/xero/webhook', '/twilio/reply',
   '/paystack/webhook',
 ]);
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   if (PUBLIC_PATHS.has(req.path)) return next();
   const accountId = req.session && req.session.accountId;
-  if (accountId && accounts.getAccount(accountId)) { req.accountId = accountId; return next(); }
+  if (accountId && await accounts.getAccount(accountId)) { req.accountId = accountId; return next(); }
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'auth required' });
   return res.redirect('/login');
 }
@@ -198,12 +202,12 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 app.get('/app', (req, res) => res.sendFile(path.join(__dirname, 'views', 'dashboard.html')));
 
 // Landing-page waitlist sign-up (public).
-app.post('/api/waitlist', (req, res) => {
+app.post('/api/waitlist', async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
     return res.status(400).json({ error: 'Please enter a valid email address' });
   }
-  db.prepare(`INSERT OR IGNORE INTO waitlist (email) VALUES (?)`).run(email);
+  await db.run(`INSERT INTO waitlist (email) VALUES (?) ON CONFLICT DO NOTHING`, email);
   res.json({ ok: true });
 });
 
@@ -212,8 +216,8 @@ app.get('/login', (req, res) => {
   if (req.session?.accountId) return res.redirect('/app');
   res.type('html').send(loginPage(!!req.query.error));
 });
-app.post('/login', (req, res) => {
-  const acc = accounts.verifyLogin(req.body.email, req.body.password);
+app.post('/login', async (req, res) => {
+  const acc = await accounts.verifyLogin(req.body.email, req.body.password);
   if (!acc) return res.redirect('/login?error=1');
   req.session.accountId = acc.id;
   res.redirect('/app');
@@ -222,9 +226,9 @@ app.get('/signup', (req, res) => {
   if (req.session?.accountId) return res.redirect('/app');
   res.type('html').send(signupPage(req.query.error ? String(req.query.error) : null));
 });
-app.post('/signup', (req, res) => {
+app.post('/signup', async (req, res) => {
   try {
-    const acc = accounts.createAccount({
+    const acc = await accounts.createAccount({
       email: req.body.email,
       password: req.body.password,
       businessName: req.body.business_name,
@@ -267,7 +271,7 @@ app.get('/xero/callback', async (req, res) => {
 
 // ── Xero webhook (invoice paid / updated) ──────────────────────────────────
 
-app.post('/xero/webhook', express.raw({ type: '*/*' }), (req, res) => {
+app.post('/xero/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   const sig = req.headers['x-xero-signature'];
   if (!validateWebhook(req.body, sig)) return res.sendStatus(401);
 
@@ -277,9 +281,8 @@ app.post('/xero/webhook', express.raw({ type: '*/*' }), (req, res) => {
     const events = JSON.parse(req.body.toString()).events || [];
     for (const ev of events) {
       if (ev.eventType === 'UPDATE' && ev.eventCategory === 'INVOICE') {
-        const tenant = db.prepare(`SELECT * FROM tenants WHERE xero_tenant_id = ?`)
-          .get(ev.tenantId);
-        if (tenant) markPaid(tenant.id, ev.resourceId);
+        const tenant = await db.get(`SELECT * FROM tenants WHERE xero_tenant_id = ?`, ev.tenantId);
+        if (tenant) await markPaid(tenant.id, ev.resourceId);
       }
     }
   } catch (err) {
@@ -294,11 +297,9 @@ app.post('/paystack/webhook', express.raw({ type: '*/*' }), (req, res) => {
     return res.sendStatus(401);
   }
   res.sendStatus(200); // ack fast
-  try {
-    handlePaystackEvent(JSON.parse(req.body.toString()));
-  } catch (err) {
-    console.error('[paystack webhook]', err.message);
-  }
+  handlePaystackEvent(JSON.parse(req.body.toString())).catch(err =>
+    console.error('[paystack webhook]', err.message)
+  );
 });
 
 // Paystack redirects the customer back here after checkout (logged in).
@@ -306,7 +307,7 @@ app.get('/billing/callback', async (req, res) => {
   try {
     const tx = await paystack.verifyTransaction(req.query.reference);
     if (tx.status === 'success') {
-      accounts.setSubscription(req.session.accountId, {
+      await accounts.setSubscription(req.session.accountId, {
         plan: tx.metadata?.plan,
         status: 'active',
         customerCode: tx.customer?.customer_code,
@@ -322,16 +323,18 @@ app.get('/billing/callback', async (req, res) => {
 
 // ── Twilio WhatsApp inbound reply ──────────────────────────────────────────
 
-app.post('/twilio/reply', (req, res) => {
+app.post('/twilio/reply', async (req, res) => {
   const { From, Body } = req.body;
   const intent = parseReplyIntent(Body);
   // Route the reply to whichever tenant has a matching invoice phone number.
   const key = String(From || '').replace(/\D/g, '').slice(-9);
   const inv = key
-    ? db.prepare(`SELECT tenant_id FROM invoices WHERE contact_phone LIKE ?
-                  ORDER BY last_chased_at DESC LIMIT 1`).get('%' + key + '%')
+    ? await db.get(
+        `SELECT tenant_id FROM invoices WHERE contact_phone LIKE ? ORDER BY last_chased_at DESC LIMIT 1`,
+        '%' + key + '%'
+      )
     : null;
-  if (inv) handleReply({ tenantId: inv.tenant_id, fromNumber: From, body: Body, intent });
+  if (inv) await handleReply({ tenantId: inv.tenant_id, fromNumber: From, body: Body, intent });
 
   // Twilio expects TwiML response (empty is fine — no auto-reply in MVP)
   res.type('text/xml').send('<Response></Response>');
@@ -339,16 +342,16 @@ app.post('/twilio/reply', (req, res) => {
 
 // ── Dashboard API ──────────────────────────────────────────────────────────
 
-app.get('/api/status', (req, res) => {
-  const acc = accounts.getAccount(req.accountId);
+app.get('/api/status', async (req, res) => {
+  const acc = await accounts.getAccount(req.accountId);
   const billing = {
     plan: acc.plan, status: acc.subscription_status,
     trial_days_left: accounts.trialDaysLeft(acc), active: accounts.isActive(acc),
   };
-  const tenant = activeTenant(req.accountId);
-  if (!tenant) return res.json({ connected: false, paused: isChasingPaused(req.accountId), billing });
+  const tenant = await activeTenant(req.accountId);
+  if (!tenant) return res.json({ connected: false, paused: await isChasingPaused(req.accountId), billing });
 
-  const stats = db.prepare(`
+  const stats = await db.get(`
     SELECT
       COUNT(*)                                             AS total_overdue,
       COALESCE(SUM(amount_due), 0)                         AS total_value,
@@ -356,41 +359,43 @@ app.get('/api/status', (req, res) => {
       COALESCE(SUM(CASE WHEN status = 'PAID' THEN amount_due END), 0) AS recovered,
       COUNT(CASE WHEN chase_stage >= 1 THEN 1 END)         AS chased_count
     FROM invoices WHERE tenant_id = ?
-  `).get(tenant.id);
+  `, tenant.id);
 
-  const invoices = db.prepare(`
+  const invoices = await db.all(`
     SELECT * FROM invoices WHERE tenant_id = ? AND status = 'OVERDUE'
     ORDER BY days_overdue DESC LIMIT 50
-  `).all(tenant.id);
+  `, tenant.id);
 
-  const recent = db.prepare(`
+  const recent = await db.all(`
     SELECT cl.*, i.invoice_number, i.contact_name FROM chase_log cl
     JOIN invoices i ON i.id = cl.invoice_id
     WHERE cl.tenant_id = ? ORDER BY cl.sent_at DESC LIMIT 20
-  `).all(tenant.id);
+  `, tenant.id);
 
   // Most common currency among this org's overdue invoices, for stat totals.
-  const curRow = db.prepare(`
+  const curRow = await db.get(`
     SELECT currency, COUNT(*) c FROM invoices
     WHERE tenant_id = ? AND status = 'OVERDUE'
     GROUP BY currency ORDER BY c DESC LIMIT 1
-  `).get(tenant.id);
+  `, tenant.id);
 
   res.json({ connected: true, tenant: tenant.name,
-             currency: curRow?.currency || 'ZAR', paused: isChasingPaused(req.accountId),
+             currency: curRow?.currency || 'ZAR', paused: await isChasingPaused(req.accountId),
              billing, stats, invoices, recent });
 });
 
-app.get('/api/invoices', (req, res) => {
-  const tenant = activeTenant(req.accountId);
+app.get('/api/invoices', async (req, res) => {
+  const tenant = await activeTenant(req.accountId);
   if (!tenant) return res.json([]);
-  const rows = db.prepare(`SELECT * FROM invoices WHERE tenant_id = ?
-                            ORDER BY days_overdue DESC`).all(tenant.id);
+  const rows = await db.all(
+    `SELECT * FROM invoices WHERE tenant_id = ? ORDER BY days_overdue DESC`,
+    tenant.id
+  );
   res.json(rows);
 });
 
 app.post('/api/sync', async (req, res) => {
-  const tenant = activeTenant(req.accountId);
+  const tenant = await activeTenant(req.accountId);
   if (!tenant) return res.status(400).json({ error: 'Not connected to Xero' });
   try {
     const count = await syncOverdueInvoices(tenant);
@@ -400,13 +405,13 @@ app.post('/api/sync', async (req, res) => {
   }
 });
 
-app.post('/api/pause', (req, res) => {
-  res.json({ paused: setChasingPaused(req.accountId, !!req.body.paused) });
+app.post('/api/pause', async (req, res) => {
+  res.json({ paused: await setChasingPaused(req.accountId, !!req.body.paused) });
 });
 
 // ── Billing (Paystack) ───────────────────────────────────────────────────────
-app.get('/api/billing', (req, res) => {
-  const acc = accounts.getAccount(req.accountId);
+app.get('/api/billing', async (req, res) => {
+  const acc = await accounts.getAccount(req.accountId);
   res.json({
     plan: acc.plan,
     status: acc.subscription_status,
@@ -419,7 +424,7 @@ app.get('/api/billing', (req, res) => {
 });
 
 app.post('/api/billing/subscribe', async (req, res) => {
-  const acc = accounts.getAccount(req.accountId);
+  const acc = await accounts.getAccount(req.accountId);
   if (!paystack.PLANS[req.body.plan]) return res.status(400).json({ error: 'Unknown plan' });
   try {
     const r = await paystack.initSubscription({
@@ -433,23 +438,23 @@ app.post('/api/billing/subscribe', async (req, res) => {
 });
 
 // Business name + chase cadence settings (per account).
-app.get('/api/settings', (req, res) => res.json(getAppSettings(req.accountId)));
-app.post('/api/settings', (req, res) => {
+app.get('/api/settings', async (req, res) => res.json(await getAppSettings(req.accountId)));
+app.post('/api/settings', async (req, res) => {
   for (const k of Object.keys(DEFAULTS)) {
-    if (req.body[k] !== undefined) setSetting(req.accountId, k, req.body[k]);
+    if (req.body[k] !== undefined) await setSetting(req.accountId, k, req.body[k]);
   }
-  res.json(getAppSettings(req.accountId));
+  res.json(await getAppSettings(req.accountId));
 });
 
 // Add a single invoice manually (no Xero needed).
-app.post('/api/invoices/manual', (req, res) => {
+app.post('/api/invoices/manual', async (req, res) => {
   const { contact_name, amount_due, due_date } = req.body;
   const amount = parseFloat(amount_due);
   if (!contact_name || !(amount > 0) || !due_date) {
     return res.status(400).json({ error: 'Name, a positive amount, and a due date are required' });
   }
-  const tenant = targetTenantForManual(req.accountId);
-  insertManualInvoice(tenant.id, {
+  const tenant = await targetTenantForManual(req.accountId);
+  await insertManualInvoice(tenant.id, {
     contact_name,
     contact_email: req.body.contact_email,
     contact_phone: req.body.contact_phone,
@@ -462,20 +467,20 @@ app.post('/api/invoices/manual', (req, res) => {
 });
 
 // Import overdue invoices from CSV text (Sage/QuickBooks/spreadsheet export).
-app.post('/api/invoices/import', (req, res) => {
+app.post('/api/invoices/import', async (req, res) => {
   const { invoices, skipped } = csvToInvoices(req.body.csv || '');
   if (!invoices.length) {
     return res.status(400).json({ error: 'No valid rows found (need name, amount, due date)', skipped });
   }
-  const tenant = targetTenantForManual(req.accountId);
-  db.transaction(rows => rows.forEach(r => insertManualInvoice(tenant.id, r)))(invoices);
+  const tenant = await targetTenantForManual(req.accountId);
+  for (const r of invoices) await insertManualInvoice(tenant.id, r);
   res.json({ imported: invoices.length, skipped });
 });
 
 app.post('/api/chase-now', async (req, res) => {
-  if (!accounts.isActive(accounts.getAccount(req.accountId)))
+  if (!accounts.isActive(await accounts.getAccount(req.accountId)))
     return res.status(403).json({ error: 'Your trial has ended — subscribe to keep chasing.' });
-  const tenant = activeTenant(req.accountId);
+  const tenant = await activeTenant(req.accountId);
   if (!tenant) return res.status(400).json({ error: 'Not connected to Xero' });
   try {
     const count = await runChaseForTenant(tenant);
@@ -487,15 +492,15 @@ app.post('/api/chase-now', async (req, res) => {
 
 // Preview the AI message(s) for one invoice without sending.
 app.post('/api/invoice/:id/preview', async (req, res) => {
-  if (!ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
+  if (!await ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
   try { res.json(await previewChase(req.params.id)); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Send the chase for one invoice (operator override of the cron cadence).
 app.post('/api/invoice/:id/send', async (req, res) => {
-  if (!ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
-  if (!accounts.isActive(accounts.getAccount(req.accountId)))
+  if (!await ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
+  if (!accounts.isActive(await accounts.getAccount(req.accountId)))
     return res.status(403).json({ error: 'Your trial has ended — subscribe to keep chasing.' });
   try {
     const r = await sendChaseForInvoice(req.params.id);
@@ -506,47 +511,51 @@ app.post('/api/invoice/:id/send', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/invoice/:id/snooze', (req, res) => {
-  if (!ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
+app.post('/api/invoice/:id/snooze', async (req, res) => {
+  if (!await ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
   const days = parseInt(req.body.days) || 5;
-  db.prepare(`UPDATE invoices SET snoozed_until = datetime('now', ?),
-              updated_at = datetime('now') WHERE id = ?`)
-    .run(`+${days} days`, req.params.id);
+  await db.run(
+    `UPDATE invoices SET snoozed_until = NOW() + INTERVAL '${days} days', updated_at = NOW() WHERE id = ?`,
+    req.params.id
+  );
   res.json({ ok: true });
 });
 
-app.post('/api/invoice/:id/paid', (req, res) => {
-  if (!ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
-  db.prepare(`UPDATE invoices SET status = 'PAID', paid_at = datetime('now'),
-              updated_at = datetime('now') WHERE id = ?`).run(req.params.id);
+app.post('/api/invoice/:id/paid', async (req, res) => {
+  if (!await ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
+  await db.run(
+    `UPDATE invoices SET status = 'PAID', paid_at = NOW(), updated_at = NOW() WHERE id = ?`,
+    req.params.id
+  );
   res.json({ ok: true });
 });
 
 // Remove a single invoice (and its chase history). Xero-synced ones return on
 // the next sync; manual ones are gone for good.
-app.delete('/api/invoice/:id', (req, res) => {
-  if (!ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
-  db.transaction(() => {
-    db.prepare(`DELETE FROM chase_log WHERE invoice_id = ?`).run(req.params.id);
-    db.prepare(`DELETE FROM invoices WHERE id = ?`).run(req.params.id);
-  })();
+app.delete('/api/invoice/:id', async (req, res) => {
+  if (!await ownedInvoice(req.params.id, req.accountId)) return res.status(404).json({ error: 'Invoice not found' });
+  await db.run(`DELETE FROM chase_log WHERE invoice_id = ?`, req.params.id);
+  await db.run(`DELETE FROM invoices WHERE id = ?`, req.params.id);
   res.json({ ok: true });
 });
 
 // Wipe THIS ACCOUNT's data to a clean slate (its invoices, connections,
 // history) — keeps the account itself, its settings and the waitlist.
-app.post('/api/reset', (req, res) => {
-  const tids = db.prepare(`SELECT id FROM tenants WHERE account_id IS ?`)
-    .all(req.accountId || null).map(r => r.id);
-  db.transaction(() => {
-    for (const tid of tids) {
-      db.prepare(`DELETE FROM chase_log WHERE tenant_id = ?`).run(tid);
-      db.prepare(`DELETE FROM replies WHERE tenant_id = ?`).run(tid);
-      db.prepare(`DELETE FROM suppressions WHERE tenant_id = ?`).run(tid);
-      db.prepare(`DELETE FROM invoices WHERE tenant_id = ?`).run(tid);
-    }
-    db.prepare(`DELETE FROM tenants WHERE account_id IS ?`).run(req.accountId || null);
-  })();
+app.post('/api/reset', async (req, res) => {
+  const tids = (await db.all(
+    `SELECT id FROM tenants WHERE account_id IS NOT DISTINCT FROM ?`,
+    req.accountId || null
+  )).map(r => r.id);
+  for (const tid of tids) {
+    await db.run(`DELETE FROM chase_log WHERE tenant_id = ?`, tid);
+    await db.run(`DELETE FROM replies WHERE tenant_id = ?`, tid);
+    await db.run(`DELETE FROM suppressions WHERE tenant_id = ?`, tid);
+    await db.run(`DELETE FROM invoices WHERE tenant_id = ?`, tid);
+  }
+  await db.run(
+    `DELETE FROM tenants WHERE account_id IS NOT DISTINCT FROM ?`,
+    req.accountId || null
+  );
   res.json({ ok: true });
 });
 
@@ -555,7 +564,7 @@ app.post('/api/reset', (req, res) => {
 // Sync invoices from Xero every day at 7am
 cron.schedule('0 7 * * *', async () => {
   console.log('[cron] daily sync starting');
-  const tenants = db.prepare(`SELECT * FROM tenants WHERE tokens IS NOT NULL`).all();
+  const tenants = await db.all(`SELECT * FROM tenants WHERE tokens IS NOT NULL`);
   for (const t of tenants) await syncOverdueInvoices(t).catch(console.error);
 });
 

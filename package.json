@@ -11,12 +11,12 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
     "@sendgrid/mail": "^8.1.4",
-    "better-sqlite3": "^11.10.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
     "node-cron": "^3.0.3",
     "nodemailer": "^9.0.1",
+    "pg": "^8.22.0",
     "twilio": "^5.4.5",
     "xero-node": "^18.0.0"
   }

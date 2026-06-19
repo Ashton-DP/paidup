@@ -15,9 +15,11 @@ const xero = new XeroClient({
 
 // ── Token persistence ──────────────────────────────────────────────────────
 
-function saveTokens(tenantId, tokenSet) {
-  db.prepare(`UPDATE tenants SET tokens = ? WHERE xero_tenant_id = ?`)
-    .run(JSON.stringify(tokenSet), tenantId);
+async function saveTokens(tenantId, tokenSet) {
+  await db.run(
+    `UPDATE tenants SET tokens = ? WHERE xero_tenant_id = ?`,
+    JSON.stringify(tokenSet), tenantId
+  );
 }
 
 async function loadClient(tenantDbRow) {
@@ -29,7 +31,7 @@ async function loadClient(tenantDbRow) {
     tokens.refresh_token
   );
   const fresh = await xero.readTokenSet();
-  saveTokens(tenantDbRow.xero_tenant_id, fresh);
+  await saveTokens(tenantDbRow.xero_tenant_id, fresh);
   return xero;
 }
 
@@ -69,20 +71,21 @@ async function handleCallback(url, accountId) {
   // selects which one we read).
   for (const t of tenants) {
     // Scope to this account so one account can't hijack another's connection.
-    const existing = db.prepare(`SELECT id FROM tenants WHERE xero_tenant_id = ? AND account_id IS ?`)
-      .get(t.tenantId, accountId || null);
+    const existing = await db.get(
+      `SELECT id FROM tenants WHERE xero_tenant_id = ? AND account_id IS NOT DISTINCT FROM ?`,
+      t.tenantId, accountId || null
+    );
     if (!existing) {
-      db.prepare(`INSERT INTO tenants (id, account_id, name, xero_tenant_id, tokens)
-                  VALUES (?, ?, ?, ?, ?)`)
-        .run(
-          `${Date.now()}_${Math.random().toString(36).slice(2)}`,
-          accountId || null,
-          t.tenantName,
-          t.tenantId,
-          JSON.stringify(tokenSet)
-        );
+      await db.run(
+        `INSERT INTO tenants (id, account_id, name, xero_tenant_id, tokens) VALUES (?, ?, ?, ?, ?)`,
+        `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        accountId || null,
+        t.tenantName,
+        t.tenantId,
+        JSON.stringify(tokenSet)
+      );
     } else {
-      saveTokens(t.tenantId, tokenSet);
+      await saveTokens(t.tenantId, tokenSet);
     }
   }
   console.log('[handleCallback] stored orgs:', tenants.map(t => t.tenantName).join(', '));
@@ -136,7 +139,7 @@ async function syncOverdueInvoices(tenantRow) {
       ? await fetchContactDetails(client, xeroTenantId, contactId, contactCache)
       : { email: null, phone: null };
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO invoices
         (id, tenant_id, xero_invoice_id, invoice_number, contact_name,
          contact_email, contact_phone, amount_due, currency, due_date,
@@ -147,8 +150,8 @@ async function syncOverdueInvoices(tenantRow) {
         amount_due    = excluded.amount_due,
         contact_email = excluded.contact_email,
         contact_phone = excluded.contact_phone,
-        updated_at    = datetime('now')
-    `).run(
+        updated_at    = NOW()
+    `,
       `${Date.now()}_${Math.random().toString(36).slice(2)}`,
       tenantRow.id,
       inv.invoiceID,
@@ -182,11 +185,12 @@ function validateWebhook(rawBody, signatureHeader) {
 
 // ── Mark invoice paid (called on webhook or manual) ────────────────────────
 
-function markPaid(tenantId, xeroInvoiceId) {
-  db.prepare(`UPDATE invoices SET status = 'PAID', paid_at = datetime('now'),
-              updated_at = datetime('now')
-              WHERE tenant_id = ? AND xero_invoice_id = ?`)
-    .run(tenantId, xeroInvoiceId);
+async function markPaid(tenantId, xeroInvoiceId) {
+  await db.run(
+    `UPDATE invoices SET status = 'PAID', paid_at = NOW(), updated_at = NOW()
+     WHERE tenant_id = ? AND xero_invoice_id = ?`,
+    tenantId, xeroInvoiceId
+  );
 }
 
 module.exports = { xero, getAuthUrl, handleCallback, syncOverdueInvoices,
