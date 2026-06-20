@@ -17,6 +17,7 @@
     "node-cron": "^3.0.3",
     "nodemailer": "^9.0.1",
     "pg": "^8.22.0",
+    "stripe": "^22.2.2",
     "twilio": "^5.4.5",
     "xero-node": "^18.0.0"
   }

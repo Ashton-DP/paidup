@@ -1,26 +1,25 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
-const crypto = require('crypto');
 
-process.env.PAYSTACK_SECRET_KEY = 'sk_test_unit';
-const paystack = require('../src/paystack');
+process.env.STRIPE_SECRET_KEY = 'sk_test_unit';
+process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
+const stripeClient = require('../src/stripe');
 const { isActive, trialDaysLeft } = require('../src/accounts');
 
 const daysFromNow = n => new Date(Date.now() + n * 86400000).toISOString();
 const daysAgo     = n => new Date(Date.now() - n * 86400000).toISOString();
 
-test('verifyWebhook accepts a correctly-signed body, rejects tampered/empty', () => {
-  const body = Buffer.from(JSON.stringify({ event: 'charge.success' }));
-  const sig = crypto.createHmac('sha512', 'sk_test_unit').update(body).digest('hex');
-  assert.strictEqual(paystack.verifyWebhook(body, sig), true);
-  assert.strictEqual(paystack.verifyWebhook(body, 'deadbeef'), false);
-  assert.strictEqual(paystack.verifyWebhook(body, ''), false);
+test('verifyWebhook returns null for missing/invalid signature', () => {
+  const body = Buffer.from(JSON.stringify({ type: 'checkout.session.completed' }));
+  assert.strictEqual(stripeClient.verifyWebhook(body, ''), null);
+  assert.strictEqual(stripeClient.verifyWebhook(body, null), null);
+  assert.strictEqual(stripeClient.verifyWebhook(body, 'bad-sig'), null);
 });
 
 test('PLANS map has the three ZAR tiers (in cents)', () => {
-  assert.strictEqual(paystack.PLANS.starter.amount, 29900);
-  assert.strictEqual(paystack.PLANS.growth.amount, 59900);
-  assert.strictEqual(paystack.PLANS.business.amount, 99900);
+  assert.strictEqual(stripeClient.PLANS.starter.amount, 29900);
+  assert.strictEqual(stripeClient.PLANS.growth.amount, 59900);
+  assert.strictEqual(stripeClient.PLANS.business.amount, 99900);
 });
 
 test('isActive: active subscription', () => {

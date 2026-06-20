@@ -17,7 +17,7 @@ const { getAppSettings, setSetting, DEFAULTS } = require('./src/settings');
 const { csvToInvoices } = require('./src/csv');
 const { daysOverdue } = require('./src/xeroUtils');
 const accounts = require('./src/accounts');
-const paystack = require('./src/paystack');
+const stripeClient = require('./src/stripe');
 
 const app = express();
 
@@ -57,28 +57,47 @@ async function ownedInvoice(invoiceId, accountId) {
   `, invoiceId, accountId || null);
 }
 
-// Apply a Paystack webhook event to the matching account's subscription.
-async function handlePaystackEvent(evt) {
-  const { event, data } = evt || {};
-  if (!event || !data) return;
-  const email = data.customer?.email;
-  const acc = (email && await accounts.findAccountByEmail(email))
-    || (data.metadata?.accountId ? await accounts.getAccount(data.metadata.accountId) : null);
-  if (!acc) { console.warn('[paystack] no account matched for', event); return; }
+// Apply a Stripe webhook event to the matching account's subscription.
+async function handleStripeEvent(evt) {
+  const type = evt?.type;
+  const obj  = evt?.data?.object;
+  if (!type || !obj) return;
 
-  if (event === 'charge.success' || event === 'subscription.create') {
+  if (type === 'checkout.session.completed') {
+    const accountId = obj.metadata?.accountId;
+    const acc = accountId ? await accounts.getAccount(accountId) : null;
+    if (!acc) { console.warn('[stripe] no account for checkout.session.completed'); return; }
     await accounts.setSubscription(acc.id, {
-      plan: data.metadata?.plan || data.plan?.name?.toLowerCase(),
+      plan: obj.metadata?.plan,
       status: 'active',
-      customerCode: data.customer?.customer_code,
-      subscriptionCode: data.subscription_code,
-      periodEnd: data.next_payment_date || null,
+      customerCode: obj.customer,
+      subscriptionCode: obj.subscription,
+      periodEnd: null,
     });
-    console.log('[paystack] activated', acc.email);
-  } else if (event === 'invoice.payment_failed') {
-    await accounts.setSubscription(acc.id, { status: 'past_due' });
-  } else if (event === 'subscription.disable' || event === 'subscription.not_renew') {
+    console.log('[stripe] activated', acc.email);
+
+  } else if (type === 'customer.subscription.updated') {
+    const acc = await accounts.findByStripeCustomer(obj.customer);
+    if (!acc) return;
+    const status = obj.status === 'active' ? 'active'
+                 : obj.status === 'past_due' ? 'past_due'
+                 : obj.status === 'canceled' ? 'cancelled'
+                 : obj.status;
+    await accounts.setSubscription(acc.id, {
+      status,
+      periodEnd: obj.current_period_end
+        ? new Date(obj.current_period_end * 1000).toISOString() : null,
+    });
+
+  } else if (type === 'customer.subscription.deleted') {
+    const acc = await accounts.findByStripeCustomer(obj.customer);
+    if (!acc) return;
     await accounts.setSubscription(acc.id, { status: 'cancelled' });
+
+  } else if (type === 'invoice.payment_failed') {
+    const acc = await accounts.findByStripeCustomer(obj.customer);
+    if (!acc) return;
+    await accounts.setSubscription(acc.id, { status: 'past_due' });
   }
 }
 
@@ -182,7 +201,8 @@ const PUBLIC_PATHS = new Set([
   '/', '/index.html', '/healthz', '/login', '/signup', '/logout', '/api/waitlist',
   '/robots.txt', '/sitemap.xml', '/favicon.svg', '/og.svg',
   '/xero/connect', '/xero/callback', '/xero/webhook', '/twilio/reply',
-  '/paystack/webhook',
+  '/stripe/webhook',
+  '/billing/success', '/billing/cancel',
 ]);
 async function requireAuth(req, res, next) {
   if (PUBLIC_PATHS.has(req.path)) return next();
@@ -290,36 +310,22 @@ app.post('/xero/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   }
 });
 
-// ── Paystack billing webhook (subscription lifecycle) ──────────────────────
+// ── Stripe billing webhook (subscription lifecycle) ────────────────────────
 
-app.post('/paystack/webhook', express.raw({ type: '*/*' }), (req, res) => {
-  if (!paystack.verifyWebhook(req.body, req.headers['x-paystack-signature'])) {
-    return res.sendStatus(401);
-  }
-  res.sendStatus(200); // ack fast
-  handlePaystackEvent(JSON.parse(req.body.toString())).catch(err =>
-    console.error('[paystack webhook]', err.message)
-  );
+app.post('/stripe/webhook', express.raw({ type: '*/*' }), (req, res) => {
+  const evt = stripeClient.verifyWebhook(req.body, req.headers['stripe-signature']);
+  if (!evt) return res.sendStatus(401);
+  res.sendStatus(200); // ack immediately
+  handleStripeEvent(evt).catch(err => console.error('[stripe webhook]', err.message));
 });
 
-// Paystack redirects the customer back here after checkout (logged in).
-app.get('/billing/callback', async (req, res) => {
-  try {
-    const tx = await paystack.verifyTransaction(req.query.reference);
-    if (tx.status === 'success') {
-      await accounts.setSubscription(req.session.accountId, {
-        plan: tx.metadata?.plan,
-        status: 'active',
-        customerCode: tx.customer?.customer_code,
-        periodEnd: tx.paid_at || null,
-      });
-      return res.redirect('/app?subscribed=1');
-    }
-  } catch (err) {
-    console.error('[billing callback]', err.message);
-  }
-  res.redirect('/app?billing=failed');
+// Stripe redirects here after a successful checkout.
+app.get('/billing/success', async (req, res) => {
+  // Webhook handles the actual activation — just show a success page.
+  res.redirect('/app?subscribed=1');
 });
+
+app.get('/billing/cancel', (req, res) => res.redirect('/app?billing=cancelled'));
 
 // ── Twilio WhatsApp inbound reply ──────────────────────────────────────────
 
@@ -409,7 +415,7 @@ app.post('/api/pause', async (req, res) => {
   res.json({ paused: await setChasingPaused(req.accountId, !!req.body.paused) });
 });
 
-// ── Billing (Paystack) ───────────────────────────────────────────────────────
+// ── Billing (Stripe) ─────────────────────────────────────────────────────────
 app.get('/api/billing', async (req, res) => {
   const acc = await accounts.getAccount(req.accountId);
   res.json({
@@ -419,19 +425,21 @@ app.get('/api/billing', async (req, res) => {
     trial_ends_at: acc.trial_ends_at,
     active: accounts.isActive(acc),
     current_period_end: acc.current_period_end,
-    plans: Object.entries(paystack.PLANS).map(([key, p]) => ({ key, name: p.name, price: p.amount / 100 })),
+    plans: Object.entries(stripeClient.PLANS).map(([key, p]) => ({ key, name: p.name, price: p.amount / 100 })),
   });
 });
 
 app.post('/api/billing/subscribe', async (req, res) => {
   const acc = await accounts.getAccount(req.accountId);
-  if (!paystack.PLANS[req.body.plan]) return res.status(400).json({ error: 'Unknown plan' });
+  if (!stripeClient.PLANS[req.body.plan]) return res.status(400).json({ error: 'Unknown plan' });
   try {
-    const r = await paystack.initSubscription({
+    const base = process.env.BASE_URL || '';
+    const session = await stripeClient.createCheckoutSession({
       email: acc.email, plan: req.body.plan, accountId: acc.id,
-      callbackUrl: `${process.env.BASE_URL || ''}/billing/callback`,
+      successUrl: `${base}/billing/success`,
+      cancelUrl:  `${base}/billing/cancel`,
     });
-    res.json({ authorization_url: r.authorization_url });
+    res.json({ url: session.url });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

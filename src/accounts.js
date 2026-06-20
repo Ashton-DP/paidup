@@ -69,6 +69,11 @@ function trialDaysLeft(account) {
   return Math.max(0, Math.ceil((new Date(account.trial_ends_at) - new Date()) / 86400000));
 }
 
+async function findByStripeCustomer(stripeCustomerId) {
+  if (!stripeCustomerId) return null;
+  return db.get(`SELECT * FROM accounts WHERE paystack_customer_code = ?`, stripeCustomerId);
+}
+
 async function setSubscription(accountId, { plan, status, customerCode, subscriptionCode, periodEnd }) {
   const cur = await getAccount(accountId);
   if (!cur) return;
@@ -87,5 +92,5 @@ async function setSubscription(accountId, { plan, status, customerCode, subscrip
 
 module.exports = {
   hashPassword, verifyPassword, findAccountByEmail, getAccount, createAccount, verifyLogin,
-  isActive, trialDaysLeft, setSubscription,
+  isActive, trialDaysLeft, setSubscription, findByStripeCustomer,
 };
