@@ -693,11 +693,13 @@ function renderConnected(data) {
     <div class="log-list">${logItems}</div>`;
 }
 
-function renderDisconnected() {
+function renderDisconnected(billing) {
   document.getElementById('header-actions').innerHTML =
     `<a href="/logout" class="btn-ghost btn-sm" style="text-decoration:none;display:inline-flex;align-items:center">Sign out</a>`;
+  const trialExpired = billing && !billing.active;
   document.getElementById('main').innerHTML = `
-    <div class="connect-prompt">
+    ${billing ? billingBanner(billing) : ''}
+    <div class="connect-prompt" style="${trialExpired ? 'opacity:0.4;pointer-events:none' : ''}">
       <h2>Connect your Xero account</h2>
       <p>PaidUp chases your overdue invoices automatically via WhatsApp and email<br>
          — so you get paid without the awkward follow-ups.</p>
@@ -714,7 +716,7 @@ async function load() {
   try {
     state = await api('GET', '/api/status');
     if (state.connected) renderConnected(state);
-    else renderDisconnected();
+    else renderDisconnected(state.billing);
   } catch (e) {
     document.getElementById('main').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
   }
