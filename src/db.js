@@ -11,9 +11,9 @@ const { Pool } = require('pg');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway')
-    ? { rejectUnauthorized: false }
-    : false,
+  // Always enable SSL when DATABASE_URL is set — Railway and most managed Postgres
+  // require it. rejectUnauthorized:false accepts self-signed certs (Railway uses these).
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
 });
 
 // Convert SQLite-style ? placeholders to Postgres $1, $2, ...
@@ -152,7 +152,7 @@ initSchema().catch(err => {
   // In test environments without a DATABASE_URL the pool connection will fail.
   // Log the error but don't crash — pure-function tests don't need a live DB.
   if (process.env.NODE_ENV !== 'test') {
-    console.error('[db] schema init failed:', err.message);
+    console.error('[db] schema init failed:', err.message, '| code:', err.code, '| DATABASE_URL set:', !!process.env.DATABASE_URL);
     process.exit(1);
   } else {
     console.warn('[db] schema init skipped (no DATABASE_URL in test env)');
