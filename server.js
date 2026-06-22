@@ -10,6 +10,7 @@ const db = require('./src/db');
 const { getAuthUrl, handleCallback, syncOverdueInvoices,
         validateWebhook, markPaid } = require('./src/xero');
 const sage = require('./src/sage');
+const quickbooks = require('./src/quickbooks');
 const { runChaseAll, runChaseForTenant, handleReply,
         previewChase, sendChaseForInvoice } = require('./src/chaser');
 const { parseReplyIntent } = require('./src/whatsapp');
@@ -209,6 +210,7 @@ const PUBLIC_PATHS = new Set([
   '/robots.txt', '/sitemap.xml', '/favicon.svg', '/og.svg',
   '/xero/connect', '/xero/callback', '/xero/webhook', '/twilio/reply',
   '/sage/connect', '/sage/callback',
+  '/quickbooks/connect', '/quickbooks/callback',
   '/stripe/webhook',
   '/billing/success', '/billing/cancel',
   '/privacy', '/terms',
@@ -319,6 +321,28 @@ app.get('/sage/callback', async (req, res) => {
   } catch (err) {
     console.error('[sage callback]', err.message);
     res.redirect('/app?error=sage_auth_failed');
+  }
+});
+
+// ── QuickBooks Online OAuth ───────────────────────────────────────────────
+
+app.get('/quickbooks/connect', (req, res) => {
+  try {
+    res.redirect(quickbooks.getAuthUrl());
+  } catch (err) {
+    res.redirect('/app?error=qbo_not_configured');
+  }
+});
+
+app.get('/quickbooks/callback', async (req, res) => {
+  const { code, realmId } = req.query;
+  if (!code || !realmId) return res.redirect('/app?error=qbo_auth_failed');
+  try {
+    await quickbooks.handleCallback(code, realmId, req.session.accountId);
+    res.redirect('/app?connected=1');
+  } catch (err) {
+    console.error('[qbo callback]', err.message);
+    res.redirect('/app?error=qbo_auth_failed');
   }
 });
 
@@ -439,6 +463,8 @@ app.post('/api/sync', async (req, res) => {
   try {
     const count = tenant.provider === 'sage'
       ? await sage.syncOverdueInvoices(tenant)
+      : tenant.provider === 'quickbooks'
+      ? await quickbooks.syncOverdueInvoices(tenant)
       : await syncOverdueInvoices(tenant);
     res.json({ synced: count });
   } catch (err) {
@@ -610,7 +636,9 @@ cron.schedule('0 7 * * *', async () => {
   console.log('[cron] daily sync starting');
   const tenants = await db.all(`SELECT * FROM tenants WHERE tokens IS NOT NULL`);
   for (const t of tenants) {
-    const fn = t.provider === 'sage' ? sage.syncOverdueInvoices : syncOverdueInvoices;
+    const fn = t.provider === 'sage' ? sage.syncOverdueInvoices
+             : t.provider === 'quickbooks' ? quickbooks.syncOverdueInvoices
+             : syncOverdueInvoices;
     await fn(t).catch(console.error);
   }
 });
