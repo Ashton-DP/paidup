@@ -151,6 +151,9 @@ function loginPage(error) {
     <input type="password" name="password" required>
     <button type="submit">Sign in</button>
     <div class="alt">No account yet? <a href="/signup">Create one</a></div>
+    <div class="alt" style="margin-top:16px;font-size:11px;color:#555">
+      <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms &amp; Conditions</a>
+    </div>
   </form>
 </body></html>`;
 }
@@ -171,6 +174,9 @@ function signupPage(error) {
     <input type="password" name="password" placeholder="At least 8 characters" required>
     <button type="submit">Create account</button>
     <div class="alt">Already have an account? <a href="/login">Sign in</a></div>
+    <div class="alt" style="margin-top:16px;font-size:11px;color:#555">
+      By signing up you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.
+    </div>
   </form>
 </body></html>`;
 }
@@ -203,6 +209,7 @@ const PUBLIC_PATHS = new Set([
   '/xero/connect', '/xero/callback', '/xero/webhook', '/twilio/reply',
   '/stripe/webhook',
   '/billing/success', '/billing/cancel',
+  '/privacy', '/terms',
 ]);
 async function requireAuth(req, res, next) {
   if (PUBLIC_PATHS.has(req.path)) return next();
