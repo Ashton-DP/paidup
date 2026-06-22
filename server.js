@@ -6,7 +6,6 @@ const express = require('express');
 const session = require('express-session');
 const cron = require('node-cron');
 
-console.log('[env] RESEND_API_KEY set:', !!process.env.RESEND_API_KEY, '| FROM_EMAIL:', process.env.FROM_EMAIL);
 const db = require('./src/db');
 const { getAuthUrl, handleCallback, syncOverdueInvoices,
         validateWebhook, markPaid } = require('./src/xero');
@@ -220,7 +219,9 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 // The dashboard app (gated by requireAuth above). The marketing landing page
 // is served at / from public/index.html by express.static.
-app.get('/app', (req, res) => res.sendFile(path.join(__dirname, 'views', 'dashboard.html')));
+app.get('/app',     (req, res) => res.sendFile(path.join(__dirname, 'views', 'dashboard.html')));
+app.get('/privacy', (req, res) => res.sendFile(path.join(__dirname, 'views', 'privacy.html')));
+app.get('/terms',   (req, res) => res.sendFile(path.join(__dirname, 'views', 'terms.html')));
 
 // Landing-page waitlist sign-up (public).
 app.post('/api/waitlist', async (req, res) => {
