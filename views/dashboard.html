@@ -184,12 +184,89 @@
       border-radius: 10px; padding: 12px 18px; margin-bottom: 18px; font-size: 13px; font-weight: 500;
     }
     .trial-banner a { color: #9fe080; cursor: pointer; text-decoration: underline; }
-    .plan-row {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 14px 16px; border: 1px solid #2a2a35; border-radius: 10px; margin-bottom: 10px;
+    .billing-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-bottom: 4px;
     }
-    .plan-name { font-weight: 600; color: #fff; }
-    .plan-price { font-size: 13px; color: #888; margin-top: 2px; }
+    .plan-card {
+      border: 1px solid #2a2a35;
+      border-radius: 12px;
+      padding: 20px 16px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      transition: border-color 0.2s;
+    }
+    .plan-card:hover { border-color: #6c8fff66; }
+    .plan-card.popular {
+      border-color: #6c8fff;
+      background: #0f1428;
+    }
+    .plan-badge {
+      position: absolute;
+      top: -10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #6c8fff;
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 3px 10px;
+      border-radius: 99px;
+      white-space: nowrap;
+    }
+    .plan-name { font-weight: 700; font-size: 15px; color: #fff; margin-bottom: 4px; }
+    .plan-price {
+      font-size: 26px;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1;
+      margin-bottom: 2px;
+    }
+    .plan-price span { font-size: 13px; font-weight: 400; color: #666; }
+    .plan-tagline { font-size: 11px; color: #666; margin-bottom: 14px; }
+    .plan-features {
+      list-style: none;
+      flex: 1;
+      margin-bottom: 16px;
+    }
+    .plan-features li {
+      font-size: 12px;
+      color: #b0b0c0;
+      padding: 4px 0;
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      line-height: 1.4;
+    }
+    .plan-features li::before {
+      content: '✓';
+      color: #6c8fff;
+      font-weight: 700;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .plan-card.popular .plan-features li::before { color: #9eb8ff; }
+    .plan-cta {
+      width: 100%;
+      padding: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      background: #2a2a35;
+      color: #c0c0cc;
+    }
+    .plan-cta:hover { opacity: 0.85; transform: translateY(-1px); }
+    .plan-cta.primary { background: #6c8fff; color: #fff; }
+    .plan-cta.current { background: #2d6a4f; color: #b7e4c7; cursor: default; }
+    .plan-cta.current:hover { transform: none; }
 
     .modal-overlay {
       display: none;
@@ -280,11 +357,11 @@
 </div>
 
 <div class="modal-overlay" id="billing-modal">
-  <div class="modal">
-    <h3>Plans &amp; billing</h3>
-    <div class="hint" id="billing-sub"></div>
+  <div class="modal" style="width:740px;max-width:96vw;padding:28px 28px 20px">
+    <h3 style="font-size:20px;margin-bottom:4px">Plans &amp; billing</h3>
+    <div class="hint" id="billing-sub" style="margin-bottom:20px"></div>
     <div id="billing-plans"><div class="empty">Loading…</div></div>
-    <div class="modal-actions">
+    <div class="modal-actions" style="margin-top:16px">
       <button type="button" class="btn-ghost" onclick="closeBilling()">Close</button>
     </div>
   </div>
@@ -502,6 +579,42 @@ function billingBanner(b) {
   return '';
 }
 
+const PLAN_DETAILS = {
+  starter: {
+    tagline: 'Perfect for freelancers & small teams',
+    features: [
+      'Up to 50 overdue invoices',
+      'Automated email reminders',
+      '3-stage chase sequence',
+      'Manual invoice entry',
+      'Chase activity log',
+      'CSV import',
+    ],
+  },
+  growth: {
+    tagline: 'Most popular for growing businesses',
+    features: [
+      'Up to 200 overdue invoices',
+      'Email + WhatsApp reminders',
+      'Xero sync — invoices pulled automatically',
+      'AI-written personalised messages',
+      'Pause & snooze per invoice',
+      'Priority email support',
+    ],
+  },
+  business: {
+    tagline: 'For agencies & high-volume billing',
+    features: [
+      'Unlimited overdue invoices',
+      'Everything in Growth',
+      'Custom chase cadence & cooldowns',
+      'Multi-currency support',
+      'Bulk chase with one click',
+      'Dedicated onboarding support',
+    ],
+  },
+};
+
 async function openBilling() {
   const m = document.getElementById('billing-modal');
   m.style.display = 'flex';
@@ -511,14 +624,32 @@ async function openBilling() {
     document.getElementById('billing-sub').innerHTML = b.status === 'active'
       ? `Current plan: <b style="color:#fff">${b.plan}</b> · active`
       : (b.status === 'trialing'
-          ? `Free trial — <b style="color:#fff">${b.trial_days_left} days</b> left`
-          : `Status: <b style="color:#fff">${b.status}</b>`);
-    document.getElementById('billing-plans').innerHTML = b.plans.map(p => `
-      <div class="plan-row">
-        <div><div class="plan-name">${p.name}</div><div class="plan-price">R${p.price}/month</div></div>
-        <button class="btn-primary btn-sm" onclick="subscribe('${p.key}')">
-          ${b.plan === p.key && b.status === 'active' ? 'Current plan' : 'Choose'}</button>
-      </div>`).join('');
+          ? `Free trial — <b style="color:#fff">${b.trial_days_left} day${b.trial_days_left !== 1 ? 's' : ''}</b> left`
+          : `Status: <b style="color:#ff9b9b">${b.status}</b> — choose a plan to continue`);
+
+    const isCurrent = (key) => b.plan === key && b.status === 'active';
+
+    document.getElementById('billing-plans').innerHTML = `<div class="billing-grid">${
+      b.plans.map(p => {
+        const det = PLAN_DETAILS[p.key] || {};
+        const popular = p.key === 'growth';
+        const current = isCurrent(p.key);
+        return `
+          <div class="plan-card${popular ? ' popular' : ''}">
+            ${popular ? '<div class="plan-badge">Most popular</div>' : ''}
+            <div class="plan-name">${p.name}</div>
+            <div class="plan-price">R${p.price}<span>/mo</span></div>
+            <div class="plan-tagline">${det.tagline || ''}</div>
+            <ul class="plan-features">
+              ${(det.features || []).map(f => `<li>${f}</li>`).join('')}
+            </ul>
+            <button class="plan-cta${popular && !current ? ' primary' : ''}${current ? ' current' : ''}"
+              ${current ? 'disabled' : `onclick="subscribe('${p.key}')"`}>
+              ${current ? '✓ Current plan' : 'Get started'}
+            </button>
+          </div>`;
+      }).join('')
+    }</div>`;
   } catch (e) {
     document.getElementById('billing-plans').innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
   }
@@ -527,7 +658,7 @@ function closeBilling() { document.getElementById('billing-modal').style.display
 async function subscribe(plan) {
   try {
     const r = await api('POST', '/api/billing/subscribe', { plan });
-    if (r.authorization_url) window.location.href = r.authorization_url;
+    if (r.url) window.location.href = r.url;
     else toast('Could not start checkout', true);
   } catch (e) { toast(e.message, true); }
 }
