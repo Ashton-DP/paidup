@@ -12,6 +12,9 @@ const DEFAULTS = {
   stage2_days: 7,
   stage3_days: 21,
   cooldown_days: 6,
+  payfast_merchant_id: '',
+  payfast_merchant_key: '',
+  payfast_passphrase: '',
 };
 
 async function getSetting(accountId, key) {

@@ -43,7 +43,7 @@ async function runChaseForTenant(tenantRow) {
     const senderName = businessName || tenantRow.name;
 
     try {
-      const paymentUrl = payfast.isConfigured() ? payfast.getPayUrl(invoice.id) : null;
+      const paymentUrl = await payfast.isConfigured(accountId) ? payfast.getPayUrl(invoice.id) : null;
 
       // ── Email ──────────────────────────────────────────────────────────
       if (invoice.contact_email &&
@@ -201,7 +201,7 @@ async function loadInvoiceWithSender(invoiceId) {
 async function previewChase(invoiceId) {
   const { invoice, senderName, accountId } = await loadInvoiceWithSender(invoiceId);
   const stage = await computeManualStage(invoice, accountId);
-  const paymentUrl = payfast.isConfigured() ? payfast.getPayUrl(invoice.id) : null;
+  const paymentUrl = await payfast.isConfigured(accountId) ? payfast.getPayUrl(invoice.id) : null;
   const out = { stage, contact_name: invoice.contact_name, paymentUrl };
   if (invoice.contact_email) {
     out.email = await generateChaseMessage({ invoice, stage, channel: 'email', senderName, paymentUrl });
@@ -223,7 +223,7 @@ async function sendChaseForInvoice(invoiceId) {
   const sent = [];
   const errors = [];
 
-  const paymentUrl = payfast.isConfigured() ? payfast.getPayUrl(invoice.id) : null;
+  const paymentUrl = await payfast.isConfigured(accountId) ? payfast.getPayUrl(invoice.id) : null;
 
   if (invoice.contact_email && !await isSuppressed(invoice.tenant_id, 'email', emailKey(invoice.contact_email))) {
     try {

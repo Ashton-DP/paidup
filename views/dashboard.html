@@ -385,6 +385,14 @@
       <button type="submit" class="btn-primary">Save settings</button>
     </div>
     <div style="margin-top:18px;padding-top:16px;border-top:1px solid #2a2a35">
+      <div class="preview-label" style="margin-bottom:8px">💳 PayFast payment links</div>
+      <div class="hint" style="margin-bottom:12px">Enter your PayFast credentials so clients can pay directly from their reminder. Money goes straight into your bank account. Get these from <strong>payfast.co.za → Account → Integration</strong>.</div>
+      <div class="field"><label>Merchant ID</label><input name="payfast_merchant_id" placeholder="e.g. 12345678" autocomplete="off"></div>
+      <div class="field"><label>Merchant Key</label><input name="payfast_merchant_key" placeholder="e.g. abc1de2fgh3ij" autocomplete="off"></div>
+      <div class="field"><label>Passphrase</label><input name="payfast_passphrase" type="password" placeholder="Your PayFast passphrase" autocomplete="off"></div>
+      <div style="font-size:12px;color:#666;margin-top:4px">Leave blank to disable payment links. Never share these credentials.</div>
+    </div>
+    <div style="margin-top:18px;padding-top:16px;border-top:1px solid #2a2a35">
       <div class="preview-label" style="color:#ff9b9b">Danger zone</div>
       <button type="button" class="btn-danger btn-sm" style="margin-top:8px" onclick="resetData()">Clear all data</button>
       <div style="font-size:12px;color:#666;margin-top:8px">Wipes every invoice, the Xero connection and chase history. Your settings are kept.</div>
@@ -674,20 +682,30 @@ async function openSettings() {
     f.stage2_days.value = s.stage2_days;
     f.stage3_days.value = s.stage3_days;
     f.cooldown_days.value = s.cooldown_days;
+    f.payfast_merchant_id.value  = s.payfast_merchant_id || '';
+    f.payfast_merchant_key.value = s.payfast_merchant_key || '';
+    f.payfast_passphrase.value   = s.payfast_passphrase ? '••••••••' : '';
   } catch (e) { toast(e.message, true); }
 }
 function closeSettings() { document.getElementById('settings-modal').style.display = 'none'; }
 async function saveSettings(e) {
   e.preventDefault();
   const f = e.target;
+  const body = {
+    business_name: f.business_name.value.trim(),
+    stage1_days:   f.stage1_days.value,
+    stage2_days:   f.stage2_days.value,
+    stage3_days:   f.stage3_days.value,
+    cooldown_days: f.cooldown_days.value,
+    payfast_merchant_id:  f.payfast_merchant_id.value.trim(),
+    payfast_merchant_key: f.payfast_merchant_key.value.trim(),
+  };
+  // Only send passphrase if it was changed (not the masked placeholder)
+  if (f.payfast_passphrase.value && f.payfast_passphrase.value !== '••••••••') {
+    body.payfast_passphrase = f.payfast_passphrase.value;
+  }
   try {
-    await api('POST', '/api/settings', {
-      business_name: f.business_name.value.trim(),
-      stage1_days: f.stage1_days.value,
-      stage2_days: f.stage2_days.value,
-      stage3_days: f.stage3_days.value,
-      cooldown_days: f.cooldown_days.value,
-    });
+    await api('POST', '/api/settings', body);
     toast('Settings saved');
     closeSettings();
   } catch (err) { toast(err.message, true); }

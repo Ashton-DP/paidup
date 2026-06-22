@@ -377,13 +377,13 @@ app.get('/pay/cancel', (req, res) => {
 app.get('/pay/:token/:invoiceId', async (req, res) => {
   const { token, invoiceId } = req.params;
   if (!payfast.verifyToken(invoiceId, token)) return res.status(404).send('Invalid link');
-  const invoice = await db.get(`SELECT i.*, t.name as tenant_name FROM invoices i JOIN tenants t ON t.id = i.tenant_id WHERE i.id = ?`, invoiceId);
+  const invoice = await db.get(`SELECT i.*, t.name as tenant_name, t.account_id FROM invoices i JOIN tenants t ON t.id = i.tenant_id WHERE i.id = ?`, invoiceId);
   if (!invoice || invoice.status === 'PAID') {
     return res.send(payPage(`<div class="success-msg"><div class="icon">✅</div><h2>Already paid</h2><p>This invoice has been settled. Thank you!</p></div>`));
   }
-  if (!payfast.isConfigured()) return res.status(503).send('Payment processing not yet configured');
+  if (!await payfast.isConfigured(invoice.account_id)) return res.status(503).send('Payment processing not yet configured');
 
-  const params = payfast.buildPaymentParams(invoice, invoice.tenant_name);
+  const params = await payfast.buildPaymentParams(invoice, invoice.tenant_name, invoice.account_id);
   const fields = Object.entries(params).map(([k, v]) =>
     `<input type="hidden" name="${k}" value="${String(v).replace(/"/g, '&quot;')}">`).join('\n');
 
@@ -415,14 +415,17 @@ app.get('/pay/:token/:invoiceId', async (req, res) => {
 app.post('/payfast/notify', express.urlencoded({ extended: false }), async (req, res) => {
   res.sendStatus(200); // must respond 200 immediately
 
-  if (!payfast.validateNotify(req.body)) {
-    console.warn('[payfast] invalid notify signature');
-    return;
-  }
   if (req.body.payment_status !== 'COMPLETE') return;
 
   const invoiceId = req.body.m_payment_id;
   if (!invoiceId) return;
+
+  // Look up account to validate signature with their passphrase
+  const inv = await db.get(`SELECT t.account_id FROM invoices i JOIN tenants t ON t.id = i.tenant_id WHERE i.id = ?`, invoiceId);
+  if (!inv || !await payfast.validateNotify(req.body, inv.account_id)) {
+    console.warn('[payfast] invalid notify signature for invoice', invoiceId);
+    return;
+  }
 
   await db.run(
     `UPDATE invoices SET status = 'PAID', paid_at = NOW(), updated_at = NOW() WHERE id = ? AND status = 'OVERDUE'`,

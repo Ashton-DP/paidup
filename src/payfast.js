@@ -5,16 +5,24 @@
  */
 
 const crypto = require('crypto');
+const { getSetting } = require('./settings');
 
 const PAYFAST_URL = process.env.PAYFAST_SANDBOX === 'true'
   ? 'https://sandbox.payfast.co.za/eng/process'
   : 'https://www.payfast.co.za/eng/process';
 
-const merchantId  = () => process.env.PAYFAST_MERCHANT_ID;
-const merchantKey = () => process.env.PAYFAST_MERCHANT_KEY;
-const passphrase  = () => process.env.PAYFAST_PASSPHRASE || '';
 const appUrl      = () => process.env.APP_URL || 'https://paid-up.co.za';
 const tokenSecret = () => process.env.PAY_TOKEN_SECRET || process.env.SESSION_SECRET || 'paidup-pay-secret';
+
+// Per-account PayFast credentials (stored in settings table)
+async function getCredentials(accountId) {
+  const [id, key, pass] = await Promise.all([
+    getSetting(accountId, 'payfast_merchant_id'),
+    getSetting(accountId, 'payfast_merchant_key'),
+    getSetting(accountId, 'payfast_passphrase'),
+  ]);
+  return { merchantId: id || '', merchantKey: key || '', passphrase: pass || '' };
+}
 
 // Derive a short HMAC token from the invoice ID — no DB column needed.
 function payToken(invoiceId) {
@@ -26,22 +34,23 @@ function verifyToken(invoiceId, token) {
 }
 
 // PayFast requires an MD5 of all params concatenated as URL-encoded key=value pairs.
-function buildSignature(params) {
+function buildSignature(params, passphrase) {
   const str = Object.entries(params)
     .filter(([k]) => k !== 'signature')
     .map(([k, v]) => `${k}=${encodeURIComponent(String(v ?? '').trim())}`)
     .join('&');
-  const withPass = passphrase()
-    ? `${str}&passphrase=${encodeURIComponent(passphrase().trim())}`
+  const withPass = passphrase
+    ? `${str}&passphrase=${encodeURIComponent(passphrase.trim())}`
     : str;
   return crypto.createHash('md5').update(withPass).digest('hex');
 }
 
-function buildPaymentParams(invoice, senderName) {
+async function buildPaymentParams(invoice, senderName, accountId) {
+  const creds = await getCredentials(accountId);
   const nameParts = (invoice.contact_name || 'Customer').split(' ');
   const params = {
-    merchant_id:   merchantId(),
-    merchant_key:  merchantKey(),
+    merchant_id:   creds.merchantId,
+    merchant_key:  creds.merchantKey,
     return_url:    `${appUrl()}/pay/success`,
     cancel_url:    `${appUrl()}/pay/cancel`,
     notify_url:    `${appUrl()}/payfast/notify`,
@@ -52,7 +61,7 @@ function buildPaymentParams(invoice, senderName) {
     amount:        Number(invoice.amount_due).toFixed(2),
     item_name:     `Invoice ${invoice.invoice_number || invoice.id} — ${senderName}`.slice(0, 100),
   };
-  params.signature = buildSignature(params);
+  params.signature = buildSignature(params, creds.passphrase);
   return params;
 }
 
@@ -62,17 +71,17 @@ function getPayUrl(invoiceId) {
 }
 
 // Returns true if PayFast's notify POST is legitimate
-function validateNotify(body) {
+async function validateNotify(body, accountId) {
   const { signature, ...rest } = body;
   if (!signature) return false;
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(buildSignature(rest))
-  );
+  const creds = await getCredentials(accountId);
+  const expected = buildSignature(rest, creds.passphrase);
+  return signature === expected;
 }
 
-function isConfigured() {
-  return !!(merchantId() && merchantKey());
+async function isConfigured(accountId) {
+  const creds = await getCredentials(accountId);
+  return !!(creds.merchantId && creds.merchantKey);
 }
 
 module.exports = { payToken, verifyToken, buildPaymentParams, getPayUrl, PAYFAST_URL, validateNotify, isConfigured };
