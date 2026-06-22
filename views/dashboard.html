@@ -831,12 +831,19 @@ function renderDisconnected(billing) {
   document.getElementById('main').innerHTML = `
     ${billing ? billingBanner(billing) : ''}
     <div class="connect-prompt" style="${trialExpired ? 'opacity:0.4;pointer-events:none' : ''}">
-      <h2>Connect your Xero account</h2>
+      <h2>Connect your accounting software</h2>
       <p>PaidUp chases your overdue invoices automatically via WhatsApp and email<br>
          — so you get paid without the awkward follow-ups.</p>
-      <a href="/xero/connect">Connect Xero →</a>
-      <div style="margin-top:30px;color:#777;font-size:13px">
-        No Xero? Works with Sage, QuickBooks or a spreadsheet too —
+      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:8px">
+        <a href="/xero/connect" style="background:#13b5ea;color:#fff;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;text-decoration:none;display:inline-flex;align-items:center;gap:8px">
+          Connect Xero →
+        </a>
+        <a href="/sage/connect" style="background:#00b050;color:#fff;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;text-decoration:none;display:inline-flex;align-items:center;gap:8px">
+          Connect Sage →
+        </a>
+      </div>
+      <div style="margin-top:24px;color:#777;font-size:13px">
+        No accounting software? Add invoices manually —
         <button class="btn-ghost btn-sm" onclick="openAddForm()">+ Add invoice</button>
         <button class="btn-ghost btn-sm" onclick="triggerCsvImport()">Import CSV</button>
       </div>

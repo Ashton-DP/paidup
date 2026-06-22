@@ -9,6 +9,7 @@ const cron = require('node-cron');
 const db = require('./src/db');
 const { getAuthUrl, handleCallback, syncOverdueInvoices,
         validateWebhook, markPaid } = require('./src/xero');
+const sage = require('./src/sage');
 const { runChaseAll, runChaseForTenant, handleReply,
         previewChase, sendChaseForInvoice } = require('./src/chaser');
 const { parseReplyIntent } = require('./src/whatsapp');
@@ -207,6 +208,7 @@ const PUBLIC_PATHS = new Set([
   '/', '/index.html', '/healthz', '/login', '/signup', '/logout', '/api/waitlist',
   '/robots.txt', '/sitemap.xml', '/favicon.svg', '/og.svg',
   '/xero/connect', '/xero/callback', '/xero/webhook', '/twilio/reply',
+  '/sage/connect', '/sage/callback',
   '/stripe/webhook',
   '/billing/success', '/billing/cancel',
   '/privacy', '/terms',
@@ -295,6 +297,28 @@ app.get('/xero/callback', async (req, res) => {
     console.error('  body    :', err && (err.body || err.response?.body || err.data));
     console.error('  stack   :', err && err.stack);
     res.redirect('/app?error=xero_auth_failed');
+  }
+});
+
+// ── Sage Business Cloud OAuth ─────────────────────────────────────────────
+
+app.get('/sage/connect', (req, res) => {
+  try {
+    res.redirect(sage.getAuthUrl());
+  } catch (err) {
+    res.redirect('/app?error=sage_not_configured');
+  }
+});
+
+app.get('/sage/callback', async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.redirect('/app?error=sage_auth_failed');
+  try {
+    await sage.handleCallback(code, req.session.accountId);
+    res.redirect('/app?connected=1');
+  } catch (err) {
+    console.error('[sage callback]', err.message);
+    res.redirect('/app?error=sage_auth_failed');
   }
 });
 
@@ -411,9 +435,11 @@ app.get('/api/invoices', async (req, res) => {
 
 app.post('/api/sync', async (req, res) => {
   const tenant = await activeTenant(req.accountId);
-  if (!tenant) return res.status(400).json({ error: 'Not connected to Xero' });
+  if (!tenant) return res.status(400).json({ error: 'Not connected to an accounting provider' });
   try {
-    const count = await syncOverdueInvoices(tenant);
+    const count = tenant.provider === 'sage'
+      ? await sage.syncOverdueInvoices(tenant)
+      : await syncOverdueInvoices(tenant);
     res.json({ synced: count });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -579,11 +605,14 @@ app.post('/api/reset', async (req, res) => {
 
 // ── Scheduled jobs ─────────────────────────────────────────────────────────
 
-// Sync invoices from Xero every day at 7am
+// Sync invoices from all connected providers every day at 7am
 cron.schedule('0 7 * * *', async () => {
   console.log('[cron] daily sync starting');
   const tenants = await db.all(`SELECT * FROM tenants WHERE tokens IS NOT NULL`);
-  for (const t of tenants) await syncOverdueInvoices(t).catch(console.error);
+  for (const t of tenants) {
+    const fn = t.provider === 'sage' ? sage.syncOverdueInvoices : syncOverdueInvoices;
+    await fn(t).catch(console.error);
+  }
 });
 
 // Run chase engine every day at 8am

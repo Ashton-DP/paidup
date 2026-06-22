@@ -5,3 +5,5 @@ paper/.env
 
 # Private business planning (not for the public repo)
 LAUNCH_PLAN.md
+.env.railway
+stripe-keys.txt

@@ -145,6 +145,18 @@ async function initSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `);
+  // Migrations — idempotent (ADD COLUMN IF NOT EXISTS is safe to run every boot)
+  await pool.query(`
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'xero';
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS sage_company_id TEXT;
+  `);
+  // Make xero_tenant_id nullable so Sage tenants can live in the same table
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE tenants ALTER COLUMN xero_tenant_id DROP NOT NULL;
+    EXCEPTION WHEN others THEN NULL;
+    END $$;
+  `);
   console.log('[db] schema ready');
 }
 
