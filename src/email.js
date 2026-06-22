@@ -35,7 +35,10 @@ async function sendViaResend({ from, to, toName, subject, text, html }) {
     }),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.message || `Resend error ${res.status}`);
+  if (!res.ok) {
+    console.error('[email] Resend error:', res.status, JSON.stringify(data));
+    throw new Error(data?.message || `Resend error ${res.status}`);
+  }
   return data;
 }
 
