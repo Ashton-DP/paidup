@@ -513,7 +513,8 @@ app.post('/api/invoice/:id/send', async (req, res) => {
   try {
     const r = await sendChaseForInvoice(req.params.id);
     if (!r.sent.length) {
-      return res.status(400).json({ error: 'Nothing sent — no contactable channel, or the contact opted out' });
+      const detail = r.errors && r.errors.length ? r.errors.join('; ') : 'no contactable channel, or the contact opted out';
+      return res.status(400).json({ error: `Nothing sent — ${detail}` });
     }
     res.json(r);
   } catch (err) { res.status(500).json({ error: err.message }); }
