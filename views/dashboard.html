@@ -818,6 +818,8 @@ function renderConnected(data) {
       <tbody>${rows}</tbody>
     </table>
 
+    <div id="analytics-section"></div>
+
     <div class="section-header">
       <h2>Recent messages sent</h2>
     </div>
@@ -856,10 +858,89 @@ function renderDisconnected(billing) {
 async function load() {
   try {
     state = await api('GET', '/api/status');
-    if (state.connected) renderConnected(state);
-    else renderDisconnected(state.billing);
+    if (state.connected) {
+      renderConnected(state);
+      loadAnalytics();
+    } else {
+      renderDisconnected(state.billing);
+    }
   } catch (e) {
     document.getElementById('main').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+  }
+}
+
+async function loadAnalytics() {
+  try {
+    const a = await api('GET', '/api/analytics');
+    if (!a.connected) return;
+
+    const fmt = n => 'R' + Number(n).toLocaleString('en-ZA', { minimumFractionDigits: 2 });
+    const rate = a.stats.paid_count + a.stats.overdue_count > 0
+      ? Math.round(a.stats.paid_count / (a.stats.paid_count + Number(a.stats.overdue_count)) * 100)
+      : 0;
+
+    const debtorRows = (a.topDebtors || []).map(d =>
+      `<tr><td>${escapeHtml(d.contact_name)}</td><td>${d.invoice_count}</td><td style="font-weight:600;color:#ff6b6b">${fmt(d.total_owed)}</td></tr>`
+    ).join('');
+
+    const flaggedRows = (a.flagged || []).map(inv => `
+      <div class="log-item" style="border-left:3px solid #ff4444">
+        <div class="log-main">
+          <span style="font-weight:600;color:#ff6b6b">${escapeHtml(inv.contact_name)}</span>
+          · ${escapeHtml(inv.invoice_number || '')} · ${fmt(inv.amount_due)} · ${inv.days_overdue} days overdue
+        </div>
+        <div class="log-detail">Stage 3 complete — ready for debt collection</div>
+        <button class="btn-danger btn-sm" style="margin-top:6px" onclick="referToCollector('${inv.id}', this)">
+          Refer to collector
+        </button>
+      </div>`).join('');
+
+    const analyticsHtml = `
+      <div class="section-header"><h2>Recovery analytics</h2></div>
+      <div class="stats-grid" style="margin-bottom:18px">
+        <div class="stat-card">
+          <div class="label">Total recovered</div>
+          <div class="value" style="color:#4ade80">${fmt(a.stats.recovered)}</div>
+          <div class="sub">${a.stats.paid_count} invoice${a.stats.paid_count != 1 ? 's' : ''} paid</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Recovery rate</div>
+          <div class="value">${rate}%</div>
+          <div class="sub">of all invoices collected</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Avg. days to pay</div>
+          <div class="value">${Math.round(a.stats.avg_days_to_pay)}</div>
+          <div class="sub">after invoice due date</div>
+        </div>
+      </div>
+      ${debtorRows ? `
+        <div class="section-header"><h2>Top debtors</h2></div>
+        <table style="margin-bottom:24px">
+          <thead><tr><th>Client</th><th>Invoices</th><th>Total owed</th></tr></thead>
+          <tbody>${debtorRows}</tbody>
+        </table>` : ''}
+      ${flaggedRows ? `
+        <div class="section-header"><h2 style="color:#ff6b6b">Ready for debt collection</h2></div>
+        <div class="log-list" style="margin-bottom:24px">${flaggedRows}</div>` : ''}`;
+
+    const el = document.getElementById('analytics-section');
+    if (el) el.innerHTML = analyticsHtml;
+  } catch (e) {
+    console.warn('[analytics]', e.message);
+  }
+}
+
+async function referToCollector(invoiceId, btn) {
+  if (!confirm('Send yourself a debt collection referral email for this invoice?')) return;
+  btn.disabled = true;
+  try {
+    await api('POST', '/api/refer-to-collector', { invoiceId });
+    toast('Referral email sent to your inbox');
+    btn.textContent = 'Sent ✓';
+  } catch (e) {
+    toast(e.message, true);
+    btn.disabled = false;
   }
 }
 

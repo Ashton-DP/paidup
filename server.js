@@ -20,6 +20,7 @@ const { csvToInvoices } = require('./src/csv');
 const { daysOverdue } = require('./src/xeroUtils');
 const accounts = require('./src/accounts');
 const stripeClient = require('./src/stripe');
+const payfast = require('./src/payfast');
 
 const app = express();
 
@@ -214,6 +215,7 @@ const PUBLIC_PATHS = new Set([
   '/stripe/webhook',
   '/billing/success', '/billing/cancel',
   '/privacy', '/terms',
+  '/pay/success', '/pay/cancel', '/payfast/notify',
 ]);
 async function requireAuth(req, res, next) {
   if (PUBLIC_PATHS.has(req.path)) return next();
@@ -343,6 +345,168 @@ app.get('/quickbooks/callback', async (req, res) => {
   } catch (err) {
     console.error('[qbo callback]', err.message);
     res.redirect('/app?error=qbo_auth_failed');
+  }
+});
+
+// ── PayFast payment portal ────────────────────────────────────────────────
+
+function payPage(body) {
+  const fs = require('fs');
+  const tmpl = fs.readFileSync(path.join(__dirname, 'views/pay.html'), 'utf8');
+  return tmpl.replace('{{BODY}}', body);
+}
+
+app.get('/pay/success', (req, res) => {
+  res.send(payPage(`
+    <div class="success-msg">
+      <div class="icon">✅</div>
+      <h2>Payment received!</h2>
+      <p>Thank you — your payment is being processed.<br>You'll receive a confirmation shortly.</p>
+    </div>`));
+});
+
+app.get('/pay/cancel', (req, res) => {
+  res.send(payPage(`
+    <div class="cancel-msg">
+      <div class="icon">↩️</div>
+      <h2>Payment cancelled</h2>
+      <p>No payment was taken. If you'd like to pay, click the link in your original reminder.</p>
+    </div>`));
+});
+
+app.get('/pay/:token/:invoiceId', async (req, res) => {
+  const { token, invoiceId } = req.params;
+  if (!payfast.verifyToken(invoiceId, token)) return res.status(404).send('Invalid link');
+  const invoice = await db.get(`SELECT i.*, t.name as tenant_name FROM invoices i JOIN tenants t ON t.id = i.tenant_id WHERE i.id = ?`, invoiceId);
+  if (!invoice || invoice.status === 'PAID') {
+    return res.send(payPage(`<div class="success-msg"><div class="icon">✅</div><h2>Already paid</h2><p>This invoice has been settled. Thank you!</p></div>`));
+  }
+  if (!payfast.isConfigured()) return res.status(503).send('Payment processing not yet configured');
+
+  const params = payfast.buildPaymentParams(invoice, invoice.tenant_name);
+  const fields = Object.entries(params).map(([k, v]) =>
+    `<input type="hidden" name="${k}" value="${String(v).replace(/"/g, '&quot;')}">`).join('\n');
+
+  const fmt = (n, c) => new Intl.NumberFormat('en-ZA', { style: 'currency', currency: c || 'ZAR' }).format(Number(n));
+
+  res.send(payPage(`
+    <div class="card-header">
+      <div class="biz">${invoice.tenant_name}</div>
+      <div class="sub">Secure invoice payment</div>
+    </div>
+    <div class="card-body">
+      <div class="label">Client</div><div class="value">${invoice.contact_name}</div>
+      <div class="label">Invoice</div><div class="value">${invoice.invoice_number || invoice.id}</div>
+      <div class="label">Due date</div><div class="value">${invoice.due_date}</div>
+      <div class="amount-box">
+        <div class="amt">${fmt(invoice.amount_due, invoice.currency)}</div>
+        <div class="amt-label">Amount due</div>
+      </div>
+      <form method="POST" action="${payfast.PAYFAST_URL}" id="pf-form">
+        ${fields}
+        <button type="submit" class="pay-btn">Pay securely →</button>
+      </form>
+      <div class="secure">🔒 Secured by PayFast · SSL encrypted</div>
+      <p class="note">By paying you confirm this amount is correct. For queries reply to the reminder message or contact ${invoice.tenant_name} directly.</p>
+    </div>`));
+});
+
+// PayFast ITN (Instant Transaction Notification) — marks invoice as paid
+app.post('/payfast/notify', express.urlencoded({ extended: false }), async (req, res) => {
+  res.sendStatus(200); // must respond 200 immediately
+
+  if (!payfast.validateNotify(req.body)) {
+    console.warn('[payfast] invalid notify signature');
+    return;
+  }
+  if (req.body.payment_status !== 'COMPLETE') return;
+
+  const invoiceId = req.body.m_payment_id;
+  if (!invoiceId) return;
+
+  await db.run(
+    `UPDATE invoices SET status = 'PAID', paid_at = NOW(), updated_at = NOW() WHERE id = ? AND status = 'OVERDUE'`,
+    invoiceId
+  );
+  console.log(`[payfast] invoice ${invoiceId} marked PAID`);
+});
+
+// ── Analytics ─────────────────────────────────────────────────────────────
+
+app.get('/api/analytics', async (req, res) => {
+  try {
+    const tenant = await activeTenant(req.accountId);
+    if (!tenant) return res.json({ connected: false });
+
+    const stats = await db.get(`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'PAID')    AS paid_count,
+        COUNT(*) FILTER (WHERE status = 'OVERDUE') AS overdue_count,
+        COALESCE(SUM(amount_due) FILTER (WHERE status = 'PAID'), 0)    AS recovered,
+        COALESCE(SUM(amount_due) FILTER (WHERE status = 'OVERDUE'), 0) AS outstanding,
+        COALESCE(AVG(
+          EXTRACT(EPOCH FROM (paid_at - created_at)) / 86400
+        ) FILTER (WHERE status = 'PAID' AND paid_at IS NOT NULL), 0)   AS avg_days_to_pay
+      FROM invoices WHERE tenant_id = ?
+    `, tenant.id);
+
+    const flagged = await db.all(`
+      SELECT * FROM invoices
+      WHERE tenant_id = ? AND debt_collect_flagged = TRUE AND status = 'OVERDUE'
+      ORDER BY days_overdue DESC
+    `, tenant.id);
+
+    const topDebtors = await db.all(`
+      SELECT contact_name, SUM(amount_due) AS total_owed, COUNT(*) AS invoice_count
+      FROM invoices WHERE tenant_id = ? AND status = 'OVERDUE'
+      GROUP BY contact_name ORDER BY total_owed DESC LIMIT 5
+    `, tenant.id);
+
+    res.json({ connected: true, stats, flagged, topDebtors });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Debt collection referral email ────────────────────────────────────────
+
+app.post('/api/refer-to-collector', async (req, res) => {
+  try {
+    const invoice = await ownedInvoice(req.body.invoiceId, req.accountId);
+    if (!invoice) return res.status(404).json({ error: 'Not found' });
+    const account = await accounts.getAccount(req.accountId);
+    const settings = await (require('./src/settings')).getAppSettings(req.accountId);
+    const biz = settings.business_name || 'Your business';
+    const fmt = n => `R${Number(n).toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`;
+
+    const { sendChaseEmail } = require('./src/email');
+    await sendChaseEmail({
+      to: account.email,
+      toName: biz,
+      rawMessage: `Subject: Debt Collection Referral — Invoice ${invoice.invoice_number}
+
+Hi,
+
+The following invoice has been flagged for debt collection referral after ${invoice.days_overdue} days overdue with no payment received.
+
+Client: ${invoice.contact_name}
+Invoice: ${invoice.invoice_number}
+Amount: ${fmt(invoice.amount_due)}
+Due date: ${invoice.due_date}
+Email: ${invoice.contact_email || 'N/A'}
+Phone: ${invoice.contact_phone || 'N/A'}
+
+You can forward this to your debt collection agency of choice.
+
+— PaidUp`,
+      invoiceNumber: invoice.invoice_number,
+      senderName: 'PaidUp',
+    });
+
+    await db.run(`UPDATE invoices SET updated_at = NOW() WHERE id = ?`, invoice.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

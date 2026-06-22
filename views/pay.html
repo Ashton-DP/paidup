@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pay Invoice — {{SENDER_NAME}}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #333; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 16px rgba(0,0,0,.08); max-width: 480px; width: 100%; overflow: hidden; }
+    .card-header { background: #1a1a2e; padding: 24px 28px; }
+    .card-header .biz { font-size: 18px; font-weight: 700; color: #fff; }
+    .card-header .sub { font-size: 13px; color: #aaa; margin-top: 4px; }
+    .card-body { padding: 28px; }
+    .label { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+    .value { font-size: 16px; color: #222; margin-bottom: 18px; }
+    .amount-box { background: #f0f4ff; border: 1px solid #d0daff; border-radius: 8px; padding: 16px 20px; margin: 20px 0; text-align: center; }
+    .amount-box .amt { font-size: 32px; font-weight: 700; color: #1a1a2e; }
+    .amount-box .amt-label { font-size: 13px; color: #667; margin-top: 4px; }
+    .pay-btn { display: block; width: 100%; background: #1a9e5f; color: #fff; font-size: 16px; font-weight: 700; padding: 15px; border: none; border-radius: 8px; cursor: pointer; text-align: center; letter-spacing: .01em; margin-top: 8px; }
+    .pay-btn:hover { background: #158a52; }
+    .secure { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 14px; font-size: 12px; color: #999; }
+    .note { font-size: 12px; color: #aaa; margin-top: 20px; line-height: 1.6; }
+    .success-msg { text-align: center; padding: 40px 28px; }
+    .success-msg .icon { font-size: 48px; margin-bottom: 16px; }
+    .success-msg h2 { font-size: 22px; color: #1a9e5f; margin-bottom: 8px; }
+    .success-msg p { color: #666; font-size: 14px; }
+    .cancel-msg { text-align: center; padding: 40px 28px; }
+    .cancel-msg .icon { font-size: 48px; margin-bottom: 16px; }
+    .cancel-msg h2 { font-size: 22px; color: #555; margin-bottom: 8px; }
+    .cancel-msg p { color: #666; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    {{BODY}}
+  </div>
+</body>
+</html>

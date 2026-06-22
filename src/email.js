@@ -55,13 +55,24 @@ function parseEmailMessage(raw) {
   return { subject, body };
 }
 
-async function sendChaseEmail({ to, toName, rawMessage, invoiceNumber, senderName }) {
+async function sendChaseEmail({ to, toName, rawMessage, invoiceNumber, senderName, paymentUrl }) {
   const { subject, body } = parseEmailMessage(rawMessage);
 
   const htmlBody = body
     .split('\n\n')
     .map(p => `<p style="margin:0 0 14px;line-height:1.6;">${p.replace(/\n/g, '<br>')}</p>`)
     .join('');
+
+  const payButton = paymentUrl ? `
+        <tr>
+          <td style="padding:0 32px 28px;text-align:center;">
+            <a href="${paymentUrl}"
+               style="display:inline-block;background:#1a9e5f;color:#fff;font-size:15px;font-weight:700;padding:14px 32px;border-radius:8px;text-decoration:none;letter-spacing:.01em;">
+              Pay Now →
+            </a>
+            <p style="margin:10px 0 0;color:#aaa;font-size:11px;">Secure payment powered by PayFast</p>
+          </td>
+        </tr>` : '';
 
   const html = `
 <!DOCTYPE html>
@@ -83,6 +94,7 @@ async function sendChaseEmail({ to, toName, rawMessage, invoiceNumber, senderNam
             <div style="color:#333;font-size:15px;">${htmlBody}</div>
           </td>
         </tr>
+        ${payButton}
         <tr>
           <td style="padding:0 32px 24px;border-top:1px solid #f0f0f0;">
             <p style="margin:16px 0 0;color:#999;font-size:11px;">

@@ -150,6 +150,9 @@ async function initSchema() {
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'xero';
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS sage_company_id TEXT;
   `);
+  await pool.query(`
+    ALTER TABLE invoices ADD COLUMN IF NOT EXISTS debt_collect_flagged BOOLEAN DEFAULT FALSE;
+  `);
   // Make xero_tenant_id nullable so Sage tenants can live in the same table
   await pool.query(`
     DO $$ BEGIN

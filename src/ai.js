@@ -80,16 +80,34 @@ function formatMoney(amount, currency = 'ZAR') {
   }
 }
 
-async function generateChaseMessage({ invoice, stage, channel, senderName }) {
+function amountTier(amount) {
+  const n = Number(amount) || 0;
+  if (n >= 10000) return 'high';
+  if (n >= 1000)  return 'medium';
+  return 'low';
+}
+
+async function generateChaseMessage({ invoice, stage, channel, senderName, paymentUrl }) {
   const stageInfo = STAGES[stage];
   const amountStr = formatMoney(invoice.amount_due, invoice.currency);
   const isWhatsApp = channel === 'whatsapp';
+  const tier = amountTier(invoice.amount_due);
 
   const system = `You are an accounts receivable assistant for a South African business called "${senderName}".
 Your job is to write invoice payment reminders that are professional, polite, and effective.
 You understand South African business culture: direct but respectful, not aggressive.
 Always write in clear South African English. Never use American spellings.
 Keep messages concise — clients read these on their phones.`;
+
+  const payNote = paymentUrl
+    ? `\n- A payment link is provided separately — do NOT include the URL in the message body. End the message with a natural call to action like "click the payment link below" or "use the secure link below to pay".`
+    : '';
+
+  const tierGuidance = tier === 'high'
+    ? '- This is a high-value invoice. Reflect appropriate urgency and professionalism at every stage.'
+    : tier === 'low'
+    ? '- This is a small amount. Keep the tone especially light and friendly — preserve the relationship.'
+    : '';
 
   const prompt = `Write a ${stageInfo.label} payment reminder for the following overdue invoice.
 
@@ -106,7 +124,8 @@ Stage: ${stage} of 3
 Stage guidance:
 ${stage === 1 ? '- Friendly, assume it was an oversight. No pressure. Just a polite nudge.' : ''}
 ${stage === 2 ? '- Firm but still professional. Reference that this is a follow-up. Ask for a specific payment date or confirmation.' : ''}
-${stage === 3 ? '- Serious tone. Final notice. Mention that failure to pay may result in referral to a collections agency. Still professional — not threatening.' : ''}
+${stage === 3 ? `- Serious tone. Final notice. ${tier === 'high' ? 'Clearly state that failure to pay will result in referral to a collections agency.' : 'Mention that further steps may be taken if payment is not received.'} Still professional — not threatening.` : ''}
+${tierGuidance}${payNote}
 
 ${isWhatsApp
   ? `Format: plain text only, no markdown, no subject line, 3-5 sentences max. Greet the client by name — open with "Hi ${invoice.contact_name},".`
@@ -117,6 +136,28 @@ CRITICAL: Never output bracketed placeholders such as [Name], [Your Name], or [C
 Output only the message text — no explanation, no notes.`;
 
   return callGemini({ system, prompt, maxTokens: 600 });
+}
+
+// Use Gemini to parse a nuanced WhatsApp reply into a structured intent.
+async function parseReplyWithAI(body) {
+  const prompt = `A client replied to a payment reminder. Classify their reply into ONE of these intents:
+- "paid" — they say they've already paid or are paying now
+- "snooze" — they ask for more time or give a future payment date (extract ISO date if possible)
+- "dispute" — they question or dispute the invoice
+- "stop" — they want no more messages / opt out
+- "unknown" — none of the above
+
+Reply: "${body.slice(0, 300)}"
+
+Respond with JSON only: {"intent":"...", "date":"YYYY-MM-DD or null", "note":"one sentence summary"}`;
+
+  try {
+    const raw = await callGemini({ system: 'You are a reply classifier. Output only valid JSON.', prompt, maxTokens: 100 });
+    const json = raw.match(/\{[\s\S]*\}/)?.[0];
+    return json ? JSON.parse(json) : { intent: 'unknown', date: null };
+  } catch {
+    return { intent: 'unknown', date: null };
+  }
 }
 
 // Determine which stage an invoice should be chased at, based on days overdue
@@ -143,4 +184,4 @@ function nextChaseStage(invoice, cadence) {
   return null;
 }
 
-module.exports = { generateChaseMessage, nextChaseStage, STAGES, formatMoney };
+module.exports = { generateChaseMessage, nextChaseStage, STAGES, formatMoney, parseReplyWithAI };

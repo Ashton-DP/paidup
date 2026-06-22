@@ -10,11 +10,12 @@
  */
 
 const db = require('./db');
-const { generateChaseMessage, nextChaseStage } = require('./ai');
+const { generateChaseMessage, nextChaseStage, parseReplyWithAI } = require('./ai');
 const { sendChaseEmail } = require('./email');
 const { sendWhatsApp } = require('./whatsapp');
 const { phoneKey, emailKey, isSuppressed, isChasingPaused, addSuppression } = require('./safety');
 const { getCadence, getAppSettings } = require('./settings');
+const payfast = require('./payfast');
 
 async function runChaseForTenant(tenantRow) {
   const accountId = tenantRow.account_id;
@@ -42,11 +43,13 @@ async function runChaseForTenant(tenantRow) {
     const senderName = businessName || tenantRow.name;
 
     try {
+      const paymentUrl = payfast.isConfigured() ? payfast.getPayUrl(invoice.id) : null;
+
       // ── Email ──────────────────────────────────────────────────────────
       if (invoice.contact_email &&
           !await isSuppressed(tenantRow.id, 'email', emailKey(invoice.contact_email))) {
         const emailMsg = await generateChaseMessage({
-          invoice, stage, channel: 'email', senderName,
+          invoice, stage, channel: 'email', senderName, paymentUrl,
         });
         await sendChaseEmail({
           to: invoice.contact_email,
@@ -54,6 +57,7 @@ async function runChaseForTenant(tenantRow) {
           rawMessage: emailMsg,
           invoiceNumber: invoice.invoice_number,
           senderName,
+          paymentUrl,
         });
         await logSend({ invoice, stage, channel: 'email',
                         recipient: invoice.contact_email, body: emailMsg });
@@ -63,16 +67,17 @@ async function runChaseForTenant(tenantRow) {
       if (invoice.contact_phone &&
           !await isSuppressed(tenantRow.id, 'whatsapp', phoneKey(invoice.contact_phone))) {
         const waMsg = await generateChaseMessage({
-          invoice, stage, channel: 'whatsapp', senderName,
+          invoice, stage, channel: 'whatsapp', senderName, paymentUrl,
         });
+        const fullMsg = paymentUrl ? `${waMsg}\n\nPay now: ${paymentUrl}` : waMsg;
         const sent = await sendWhatsApp({
           to: invoice.contact_phone,
-          message: waMsg,
+          message: fullMsg,
           invoiceNumber: invoice.invoice_number,
         });
         if (sent) {
           await logSend({ invoice, stage, channel: 'whatsapp',
-                          recipient: invoice.contact_phone, body: waMsg });
+                          recipient: invoice.contact_phone, body: fullMsg });
         }
       }
 
@@ -87,6 +92,13 @@ async function runChaseForTenant(tenantRow) {
       console.error(`[chaser] failed invoice ${invoice.invoice_number}:`, err.message);
     }
   }
+
+  // Flag invoices ready for debt collection: stage 3 sent + still unpaid + 45+ days overdue
+  await db.run(`
+    UPDATE invoices SET debt_collect_flagged = TRUE, updated_at = NOW()
+    WHERE tenant_id = ? AND status = 'OVERDUE' AND chase_stage >= 3
+      AND days_overdue >= 45 AND COALESCE(debt_collect_flagged, FALSE) = FALSE
+  `, tenantRow.id);
 
   console.log(`[chaser] ${chased}/${invoices.length} invoices chased for ${tenantRow.name}`);
   return chased;
@@ -107,8 +119,9 @@ async function runChaseAll() {
   }
 }
 
-// Handle a WhatsApp reply: opt-out, snooze, mark paid, or flag dispute
-async function handleReply({ tenantId, fromNumber, body, intent }) {
+// Handle a WhatsApp reply: opt-out, snooze, mark paid, or flag dispute.
+// Uses AI to understand nuanced replies ("I'll pay on the 25th", "Can we split it?").
+async function handleReply({ tenantId, fromNumber, body, intent: rawIntent }) {
   await db.run(
     `INSERT INTO replies (tenant_id, from_number, body, channel) VALUES (?, ?, ?, 'whatsapp')`,
     tenantId, fromNumber, body
@@ -117,8 +130,18 @@ async function handleReply({ tenantId, fromNumber, body, intent }) {
   const key = phoneKey(fromNumber);
   const match = key ? `%${key}%` : null;
 
+  // Use AI parsing for richer intent; fall back to the regex-based intent passed in.
+  let intent = rawIntent || 'unknown';
+  let snoozeDate = null;
+  try {
+    const parsed = await parseReplyWithAI(body);
+    if (parsed.intent && parsed.intent !== 'unknown') {
+      intent = parsed.intent;
+      snoozeDate = parsed.date || null;
+    }
+  } catch { /* keep rawIntent */ }
+
   if (intent === 'stop') {
-    // Opt-out: never message this number again, and pause its invoices.
     await addSuppression(tenantId, 'whatsapp', key, 'stop');
     if (match) {
       await db.run(
@@ -130,22 +153,25 @@ async function handleReply({ tenantId, fromNumber, body, intent }) {
 
   if (intent === 'paid' && match) {
     await db.run(
-      `UPDATE invoices SET status = 'PAID', paid_at = NOW() WHERE tenant_id = ? AND contact_phone LIKE ?`,
+      `UPDATE invoices SET status = 'PAID', paid_at = NOW(), updated_at = NOW()
+       WHERE tenant_id = ? AND contact_phone LIKE ?`,
       tenantId, match
     );
   }
 
   if (intent === 'snooze' && match) {
-    // snooze for 5 days — give client the benefit of the doubt
+    // If AI extracted a specific date, snooze until then; otherwise 5 days.
+    const until = snoozeDate
+      ? `'${snoozeDate}'::date`
+      : `NOW() + INTERVAL '5 days'`;
     await db.run(
-      `UPDATE invoices SET snoozed_until = NOW() + INTERVAL '5 days', updated_at = NOW()
+      `UPDATE invoices SET snoozed_until = ${until}, updated_at = NOW()
        WHERE tenant_id = ? AND contact_phone LIKE ?`,
       tenantId, match
     );
   }
 
   if (intent === 'dispute' && match) {
-    // Pause chasing on the invoice(s) until a human resolves the dispute.
     await db.run(
       `UPDATE invoices SET disputed = 1, updated_at = NOW() WHERE tenant_id = ? AND contact_phone LIKE ?`,
       tenantId, match
@@ -175,13 +201,15 @@ async function loadInvoiceWithSender(invoiceId) {
 async function previewChase(invoiceId) {
   const { invoice, senderName, accountId } = await loadInvoiceWithSender(invoiceId);
   const stage = await computeManualStage(invoice, accountId);
-  const out = { stage, contact_name: invoice.contact_name };
+  const paymentUrl = payfast.isConfigured() ? payfast.getPayUrl(invoice.id) : null;
+  const out = { stage, contact_name: invoice.contact_name, paymentUrl };
   if (invoice.contact_email) {
-    out.email = await generateChaseMessage({ invoice, stage, channel: 'email', senderName });
+    out.email = await generateChaseMessage({ invoice, stage, channel: 'email', senderName, paymentUrl });
     out.email_suppressed = await isSuppressed(invoice.tenant_id, 'email', emailKey(invoice.contact_email));
   }
   if (invoice.contact_phone) {
-    out.whatsapp = await generateChaseMessage({ invoice, stage, channel: 'whatsapp', senderName });
+    out.whatsapp = await generateChaseMessage({ invoice, stage, channel: 'whatsapp', senderName, paymentUrl });
+    if (paymentUrl) out.whatsapp += `\n\nPay now: ${paymentUrl}`;
     out.whatsapp_suppressed = await isSuppressed(invoice.tenant_id, 'whatsapp', phoneKey(invoice.contact_phone));
   }
   return out;
@@ -195,11 +223,13 @@ async function sendChaseForInvoice(invoiceId) {
   const sent = [];
   const errors = [];
 
+  const paymentUrl = payfast.isConfigured() ? payfast.getPayUrl(invoice.id) : null;
+
   if (invoice.contact_email && !await isSuppressed(invoice.tenant_id, 'email', emailKey(invoice.contact_email))) {
     try {
-      const msg = await generateChaseMessage({ invoice, stage, channel: 'email', senderName });
+      const msg = await generateChaseMessage({ invoice, stage, channel: 'email', senderName, paymentUrl });
       await sendChaseEmail({ to: invoice.contact_email, toName: invoice.contact_name,
-                             rawMessage: msg, invoiceNumber: invoice.invoice_number, senderName });
+                             rawMessage: msg, invoiceNumber: invoice.invoice_number, senderName, paymentUrl });
       await logSend({ invoice, stage, channel: 'email', recipient: invoice.contact_email, body: msg });
       sent.push('email');
     } catch (e) { errors.push('email: ' + (e.message || e)); }
@@ -207,10 +237,11 @@ async function sendChaseForInvoice(invoiceId) {
 
   if (invoice.contact_phone && !await isSuppressed(invoice.tenant_id, 'whatsapp', phoneKey(invoice.contact_phone))) {
     try {
-      const msg = await generateChaseMessage({ invoice, stage, channel: 'whatsapp', senderName });
-      const ok = await sendWhatsApp({ to: invoice.contact_phone, message: msg, invoiceNumber: invoice.invoice_number });
+      const msg = await generateChaseMessage({ invoice, stage, channel: 'whatsapp', senderName, paymentUrl });
+      const fullMsg = paymentUrl ? `${msg}\n\nPay now: ${paymentUrl}` : msg;
+      const ok = await sendWhatsApp({ to: invoice.contact_phone, message: fullMsg, invoiceNumber: invoice.invoice_number });
       if (ok) {
-        await logSend({ invoice, stage, channel: 'whatsapp', recipient: invoice.contact_phone, body: msg });
+        await logSend({ invoice, stage, channel: 'whatsapp', recipient: invoice.contact_phone, body: fullMsg });
         sent.push('whatsapp');
       }
     } catch (e) { errors.push('whatsapp: ' + (e.message || e)); }
