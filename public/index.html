@@ -121,11 +121,6 @@
     .cta-band { background:linear-gradient(135deg,#1a1d33,#16161f); border:1px solid var(--line); border-radius:20px; padding:48px 32px; text-align:center; }
     .cta-band h2 { font-size:clamp(24px,4vw,32px); color:#fff; font-weight:700; }
     .cta-band p { color:var(--mut); margin:12px 0 26px; }
-    .waitlist { display:flex; gap:10px; max-width:440px; margin:0 auto; flex-wrap:wrap; justify-content:center; }
-    .waitlist input { flex:1; min-width:220px; background:var(--bg); border:1px solid var(--line); border-radius:9px; padding:13px 15px; color:var(--ink); font-size:14px; }
-    .waitlist input:focus { outline:none; border-color:var(--accent); }
-    .wl-msg { margin-top:14px; font-size:13px; min-height:18px; }
-    .wl-msg.ok { color:#7ee0a6; } .wl-msg.err { color:#ff9b9b; }
 
     footer { border-top:1px solid var(--line); padding:30px 0; color:var(--dim); font-size:13px; text-align:center; }
 
@@ -204,15 +199,11 @@
   </div>
 </div></section>
 
-<section id="waitlist"><div class="wrap">
+<section id="start"><div class="wrap">
   <div class="cta-band">
-    <h2>Be first to get paid faster</h2>
-    <p>Drop your email and we'll let you know the moment PaidUp opens to new businesses.</p>
-    <form class="waitlist" onsubmit="return joinWaitlist(event)">
-      <input type="email" id="wl-email" placeholder="you@yourbusiness.co.za" required>
-      <button type="submit" class="btn btn-primary">Join waitlist</button>
-    </form>
-    <div class="wl-msg" id="wl-msg"></div>
+    <h2>Stop chasing. Start getting paid.</h2>
+    <p>Set up in minutes. No card required for the free trial. Cancel anytime.</p>
+    <a href="/signup" class="btn btn-primary btn-lg">Start your free 14-day trial</a>
   </div>
 </div></section>
 
@@ -223,26 +214,6 @@
   <a href="/terms" style="color:var(--mut)">Terms &amp; Conditions</a>
 </div></footer>
 
-<script>
-async function joinWaitlist(e) {
-  e.preventDefault();
-  const email = document.getElementById('wl-email').value.trim();
-  const msg = document.getElementById('wl-msg');
-  try {
-    const res = await fetch('/api/waitlist', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ email }),
-    });
-    if (!res.ok) throw new Error((await res.json()).error || 'Something went wrong');
-    msg.className = 'wl-msg ok';
-    msg.textContent = "You're on the list — we'll be in touch. 🎉";
-    document.getElementById('wl-email').value = '';
-  } catch (err) {
-    msg.className = 'wl-msg err';
-    msg.textContent = err.message;
-  }
-  return false;
-}
-</script>
+<script></script>
 </body>
 </html>
