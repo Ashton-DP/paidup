@@ -6,6 +6,7 @@ const express = require('express');
 const session = require('express-session');
 const cron = require('node-cron');
 
+console.log('[env] RESEND_API_KEY set:', !!process.env.RESEND_API_KEY, '| FROM_EMAIL:', process.env.FROM_EMAIL);
 const db = require('./src/db');
 const { getAuthUrl, handleCallback, syncOverdueInvoices,
         validateWebhook, markPaid } = require('./src/xero');
