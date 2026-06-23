@@ -21,6 +21,7 @@ const { daysOverdue } = require('./src/xeroUtils');
 const accounts = require('./src/accounts');
 const stripeClient = require('./src/stripe');
 const payfast = require('./src/payfast');
+const { sendPaymentNotification, sendDigestEmail } = require('./src/email');
 
 const app = express();
 
@@ -427,11 +428,26 @@ app.post('/payfast/notify', express.urlencoded({ extended: false }), async (req,
     return;
   }
 
+  const invoice = await db.get(`SELECT i.*, t.account_id FROM invoices i JOIN tenants t ON t.id = i.tenant_id WHERE i.id = ?`, invoiceId);
   await db.run(
     `UPDATE invoices SET status = 'PAID', paid_at = NOW(), updated_at = NOW() WHERE id = ? AND status = 'OVERDUE'`,
     invoiceId
   );
   console.log(`[payfast] invoice ${invoiceId} marked PAID`);
+
+  // Notify the business owner
+  if (invoice) {
+    const acc = await accounts.getAccount(invoice.account_id).catch(() => null);
+    if (acc) {
+      sendPaymentNotification({
+        to: acc.email, toName: acc.business_name || '',
+        contactName: invoice.contact_name,
+        invoiceNumber: invoice.invoice_number,
+        amount: invoice.amount_due,
+        currency: invoice.currency,
+      }).catch(e => console.error('[payfast notify email]', e.message));
+    }
+  }
 });
 
 // ── Analytics ─────────────────────────────────────────────────────────────
@@ -682,6 +698,30 @@ app.post('/api/settings', async (req, res) => {
   res.json(await getAppSettings(req.accountId));
 });
 
+// Edit contact details on an existing invoice
+app.patch('/api/invoices/:id', async (req, res) => {
+  try {
+    const invoice = await ownedInvoice(req.params.id, req.accountId);
+    if (!invoice) return res.status(404).json({ error: 'Not found' });
+    const { contact_name, contact_email, contact_phone, invoice_number } = req.body;
+    await db.run(
+      `UPDATE invoices SET
+        contact_name   = COALESCE(?, contact_name),
+        contact_email  = ?,
+        contact_phone  = ?,
+        invoice_number = COALESCE(?, invoice_number),
+        updated_at     = NOW()
+       WHERE id = ?`,
+      contact_name   || null,
+      contact_email  !== undefined ? contact_email  : invoice.contact_email,
+      contact_phone  !== undefined ? contact_phone  : invoice.contact_phone,
+      invoice_number || null,
+      invoice.id
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Add a single invoice manually (no Xero needed).
 app.post('/api/invoices/manual', async (req, res) => {
   const { contact_name, amount_due, due_date } = req.body;
@@ -798,8 +838,8 @@ app.post('/api/reset', async (req, res) => {
 
 // ── Scheduled jobs ─────────────────────────────────────────────────────────
 
-// Sync invoices from all connected providers every day at 7am
-cron.schedule('0 7 * * *', async () => {
+// Sync invoices from all connected providers every day at 6am UTC (8am SAST)
+cron.schedule('0 6 * * *', async () => {
   console.log('[cron] daily sync starting');
   const tenants = await db.all(`SELECT * FROM tenants WHERE tokens IS NOT NULL`);
   for (const t of tenants) {
@@ -810,10 +850,46 @@ cron.schedule('0 7 * * *', async () => {
   }
 });
 
-// Run chase engine every day at 8am
-cron.schedule('0 8 * * *', async () => {
-  console.log('[cron] daily chase run starting');
-  await runChaseAll().catch(console.error);
+// Chase engine runs every hour — each account's send_hour/send_days settings control
+// when messages actually go out, so no account gets chased at the wrong time.
+cron.schedule('0 * * * *', async () => {
+  console.log('[cron] hourly chase check');
+  await runChaseAll({ checkTime: true }).catch(console.error);
+});
+
+// Daily digest email — 7am UTC (9am SAST)
+cron.schedule('0 7 * * *', async () => {
+  console.log('[cron] digest emails starting');
+  const allAccounts = await db.all(`SELECT * FROM accounts`);
+  for (const acc of allAccounts) {
+    try {
+      const s = await getAppSettings(acc.id);
+      if (s.digest_email === '0') continue;
+
+      const stats = await db.get(`
+        SELECT
+          (SELECT COUNT(*) FROM chase_log cl
+           JOIN invoices i ON i.id = cl.invoice_id
+           JOIN tenants t ON t.id = i.tenant_id
+           WHERE t.account_id = $1 AND cl.sent_at > NOW() - INTERVAL '24 hours') AS chased,
+          (SELECT COUNT(*) FROM invoices i
+           JOIN tenants t ON t.id = i.tenant_id
+           WHERE t.account_id = $1 AND i.paid_at > NOW() - INTERVAL '24 hours') AS paid_count,
+          (SELECT COALESCE(SUM(i.amount_due),0) FROM invoices i
+           JOIN tenants t ON t.id = i.tenant_id
+           WHERE t.account_id = $1 AND i.paid_at > NOW() - INTERVAL '24 hours') AS paid_amount,
+          (SELECT COALESCE(SUM(i.amount_due),0) FROM invoices i
+           JOIN tenants t ON t.id = i.tenant_id
+           WHERE t.account_id = $1 AND i.status = 'OVERDUE') AS outstanding
+      `, acc.id);
+
+      if (!stats || (!stats.chased && !stats.paid_count)) continue;
+
+      await sendDigestEmail({ to: acc.email, toName: acc.business_name || '', stats });
+    } catch (e) {
+      console.error('[digest]', acc.email, e.message);
+    }
+  }
 });
 
 // ── Start ──────────────────────────────────────────────────────────────────

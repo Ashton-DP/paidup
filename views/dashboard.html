@@ -317,6 +317,31 @@
     }
     .toast.show { opacity: 1; }
     .toast.error { background: #6b2737; color: #ffb3c1; }
+
+    .search-bar {
+      display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap;
+    }
+    .search-bar input, .search-bar select {
+      background: #18181f; border: 1px solid #2a2a35; border-radius: 7px;
+      padding: 8px 12px; color: #e8e8ec; font-size: 13px;
+    }
+    .search-bar input { flex: 1; min-width: 160px; }
+    .search-bar input:focus, .search-bar select:focus { outline: none; border-color: #6c8fff; }
+
+    @media (max-width: 700px) {
+      header { padding: 0 14px; height: auto; min-height: 56px; flex-wrap: wrap; gap: 8px; padding-top: 10px; padding-bottom: 10px; }
+      .header-actions { flex-wrap: wrap; gap: 6px; }
+      main { padding: 16px 12px; }
+      .stats-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+      table { font-size: 12px; }
+      th, td { padding: 9px 10px; }
+      .col-stage, .col-channels { display: none; }
+      .modal { width: 95vw; padding: 18px; }
+      .modal .row2 { flex-direction: column; gap: 0; }
+      .billing-grid { grid-template-columns: 1fr !important; }
+      .actions-cell { flex-wrap: wrap; }
+      .section-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+    }
   </style>
 </head>
 <body>
@@ -356,6 +381,23 @@
   </form>
 </div>
 
+<div class="modal-overlay" id="edit-modal">
+  <form class="modal" onsubmit="return submitEdit(event)">
+    <h3>Edit invoice</h3>
+    <input type="hidden" name="invoice_id">
+    <div class="field"><label>Client name</label><input name="contact_name" required></div>
+    <div class="row2">
+      <div class="field"><label>Email</label><input name="contact_email" type="email"></div>
+      <div class="field"><label>Phone (WhatsApp)</label><input name="contact_phone"></div>
+    </div>
+    <div class="field"><label>Invoice #</label><input name="invoice_number"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn-ghost" onclick="closeEditForm()">Cancel</button>
+      <button type="submit" class="btn-primary">Save changes</button>
+    </div>
+  </form>
+</div>
+
 <div class="modal-overlay" id="billing-modal">
   <div class="modal" style="width:740px;max-width:96vw;padding:28px 28px 20px">
     <h3 style="font-size:20px;margin-bottom:4px">Plans &amp; billing</h3>
@@ -383,6 +425,49 @@
     <div class="modal-actions">
       <button type="button" class="btn-ghost" onclick="closeSettings()">Cancel</button>
       <button type="submit" class="btn-primary">Save settings</button>
+    </div>
+    <div style="margin-top:18px;padding-top:16px;border-top:1px solid #2a2a35">
+      <div class="preview-label" style="margin-bottom:8px">⏰ Chase schedule</div>
+      <div class="hint" style="margin-bottom:12px">Choose what time and days reminders go out. Times are South African (SAST, UTC+2).</div>
+      <div class="row2">
+        <div class="field">
+          <label>Send time</label>
+          <select name="send_hour" style="width:100%;background:#0f0f13;border:1px solid #2a2a35;border-radius:7px;padding:9px 11px;color:#e8e8ec;font-size:13px">
+            <option value="4">6:00 AM</option>
+            <option value="5">7:00 AM</option>
+            <option value="6" selected>8:00 AM</option>
+            <option value="7">9:00 AM</option>
+            <option value="8">10:00 AM</option>
+            <option value="9">11:00 AM</option>
+            <option value="10">12:00 PM</option>
+            <option value="11">1:00 PM</option>
+            <option value="12">2:00 PM</option>
+            <option value="13">3:00 PM</option>
+            <option value="14">4:00 PM</option>
+            <option value="15">5:00 PM</option>
+            <option value="16">6:00 PM</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Daily digest email</label>
+          <select name="digest_email" style="width:100%;background:#0f0f13;border:1px solid #2a2a35;border-radius:7px;padding:9px 11px;color:#e8e8ec;font-size:13px">
+            <option value="1">Enabled</option>
+            <option value="0">Disabled</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>Send days</label>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px">
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#aaa;cursor:pointer;text-transform:none;letter-spacing:0"><input type="checkbox" name="send_day_0" value="0" style="width:auto;margin:0"> Sun</label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#aaa;cursor:pointer;text-transform:none;letter-spacing:0"><input type="checkbox" name="send_day_1" value="1" style="width:auto;margin:0" checked> Mon</label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#aaa;cursor:pointer;text-transform:none;letter-spacing:0"><input type="checkbox" name="send_day_2" value="2" style="width:auto;margin:0" checked> Tue</label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#aaa;cursor:pointer;text-transform:none;letter-spacing:0"><input type="checkbox" name="send_day_3" value="3" style="width:auto;margin:0" checked> Wed</label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#aaa;cursor:pointer;text-transform:none;letter-spacing:0"><input type="checkbox" name="send_day_4" value="4" style="width:auto;margin:0" checked> Thu</label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#aaa;cursor:pointer;text-transform:none;letter-spacing:0"><input type="checkbox" name="send_day_5" value="5" style="width:auto;margin:0" checked> Fri</label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#aaa;cursor:pointer;text-transform:none;letter-spacing:0"><input type="checkbox" name="send_day_6" value="6" style="width:auto;margin:0"> Sat</label>
+        </div>
+      </div>
     </div>
     <div style="margin-top:18px;padding-top:16px;border-top:1px solid #2a2a35">
       <div class="preview-label" style="margin-bottom:8px">💳 PayFast payment links</div>
@@ -678,11 +763,23 @@ async function openSettings() {
     const s = await api('GET', '/api/settings');
     const f = m.querySelector('form');
     f.business_name.value = s.business_name || '';
-    f.stage1_days.value = s.stage1_days;
-    f.stage2_days.value = s.stage2_days;
-    f.stage3_days.value = s.stage3_days;
+    f.stage1_days.value   = s.stage1_days;
+    f.stage2_days.value   = s.stage2_days;
+    f.stage3_days.value   = s.stage3_days;
     f.cooldown_days.value = s.cooldown_days;
-    f.payfast_merchant_id.value  = s.payfast_merchant_id || '';
+    // Send time — stored as UTC hour, display as SAST (UTC+2)
+    const sastHour = ((Number(s.send_hour ?? 6)) + 2) % 24;
+    f.send_hour.value   = s.send_hour ?? 6;
+    // Try to select the matching SAST hour option
+    Array.from(f.send_hour.options).forEach(o => { o.selected = Number(o.value) === Number(s.send_hour ?? 6); });
+    f.digest_email.value = s.digest_email ?? '1';
+    // Send days checkboxes
+    const activeDays = String(s.send_days || '1,2,3,4,5').split(',').map(Number);
+    [0,1,2,3,4,5,6].forEach(d => {
+      const cb = f[`send_day_${d}`];
+      if (cb) cb.checked = activeDays.includes(d);
+    });
+    f.payfast_merchant_id.value  = s.payfast_merchant_id  || '';
     f.payfast_merchant_key.value = s.payfast_merchant_key || '';
     f.payfast_passphrase.value   = s.payfast_passphrase ? '••••••••' : '';
   } catch (e) { toast(e.message, true); }
@@ -691,16 +788,19 @@ function closeSettings() { document.getElementById('settings-modal').style.displ
 async function saveSettings(e) {
   e.preventDefault();
   const f = e.target;
+  const checkedDays = [0,1,2,3,4,5,6].filter(d => f[`send_day_${d}`]?.checked).join(',');
   const body = {
     business_name: f.business_name.value.trim(),
     stage1_days:   f.stage1_days.value,
     stage2_days:   f.stage2_days.value,
     stage3_days:   f.stage3_days.value,
     cooldown_days: f.cooldown_days.value,
+    send_hour:     f.send_hour.value,
+    send_days:     checkedDays || '1,2,3,4,5',
+    digest_email:  f.digest_email.value,
     payfast_merchant_id:  f.payfast_merchant_id.value.trim(),
     payfast_merchant_key: f.payfast_merchant_key.value.trim(),
   };
-  // Only send passphrase if it was changed (not the masked placeholder)
   if (f.payfast_passphrase.value && f.payfast_passphrase.value !== '••••••••') {
     body.payfast_passphrase = f.payfast_passphrase.value;
   }
@@ -714,6 +814,53 @@ async function saveSettings(e) {
 
 function openAddForm()  { document.getElementById('add-modal').style.display = 'flex'; }
 function closeAddForm() { document.getElementById('add-modal').style.display = 'none'; }
+
+// ── Edit invoice ────────────────────────────────────────────────────────────
+function openEditForm(inv) {
+  const m = document.getElementById('edit-modal');
+  const f = m.querySelector('form');
+  f.invoice_id.value    = inv.id;
+  f.contact_name.value  = inv.contact_name  || '';
+  f.contact_email.value = inv.contact_email || '';
+  f.contact_phone.value = inv.contact_phone || '';
+  f.invoice_number.value = inv.invoice_number || '';
+  m.style.display = 'flex';
+}
+function closeEditForm() { document.getElementById('edit-modal').style.display = 'none'; }
+async function submitEdit(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await api('PATCH', `/api/invoices/${f.invoice_id.value}`, {
+      contact_name:   f.contact_name.value.trim(),
+      contact_email:  f.contact_email.value.trim(),
+      contact_phone:  f.contact_phone.value.trim(),
+      invoice_number: f.invoice_number.value.trim(),
+    });
+    toast('Invoice updated');
+    closeEditForm();
+    await load();
+  } catch (err) { toast(err.message, true); }
+  return false;
+}
+
+// ── Search & filter ─────────────────────────────────────────────────────────
+let _allRows = [];
+function filterInvoices() {
+  const q    = (document.getElementById('invoice-search')?.value || '').toLowerCase();
+  const sort = document.getElementById('invoice-sort')?.value || 'overdue';
+  const tbody = document.getElementById('invoice-tbody');
+  if (!tbody || !_allRows.length) return;
+
+  let rows = _allRows.filter(r => !q || r.text.includes(q));
+  if (sort === 'amount')  rows = rows.slice().sort((a,b) => b.amount - a.amount);
+  if (sort === 'name')    rows = rows.slice().sort((a,b) => a.name.localeCompare(b.name));
+  // 'overdue' is the default order from the server
+
+  tbody.innerHTML = rows.length
+    ? rows.map(r => r.html).join('')
+    : '<tr><td colspan="7" style="text-align:center;padding:32px;color:#555">No matching invoices</td></tr>';
+}
 
 async function submitManual(e) {
   e.preventDefault();
@@ -768,6 +915,32 @@ function renderConnected(data) {
     <button class="btn-ghost btn-sm" onclick="openSettings()">⚙ Settings</button>
     <a href="/logout" class="btn-ghost btn-sm" style="text-decoration:none;display:inline-flex;align-items:center">Sign out</a>`;
 
+  _allRows = invoices.map(inv => ({
+    text: `${(inv.contact_name||'').toLowerCase()} ${(inv.invoice_number||'').toLowerCase()}`,
+    amount: Number(inv.amount_due) || 0,
+    name: (inv.contact_name||'').toLowerCase(),
+    html: `<tr>
+      <td>
+        <div style="font-weight:500;color:#ddd">${inv.contact_name}</div>
+        <div style="color:#555;font-size:11px;margin-top:2px">${inv.contact_email || ''}</div>
+      </td>
+      <td style="color:#888">${inv.invoice_number}</td>
+      <td class="amount">${fmtMoney(inv.amount_due, inv.currency)}</td>
+      <td class="${overdueClass(inv.days_overdue)}">${inv.days_overdue}d</td>
+      <td class="col-stage">${stageLabel(inv.chase_stage)}</td>
+      <td class="col-channels">${inv.contact_phone ? '💬' : ''}${inv.contact_email ? ' ✉️' : ''}</td>
+      <td>
+        <div class="actions-cell">
+          <button class="btn-primary btn-sm" onclick="openChase('${inv.id}')">Chase</button>
+          <button class="btn-success btn-sm" onclick="markPaid('${inv.id}')">Paid</button>
+          <button class="btn-ghost btn-sm" onclick="snooze('${inv.id}')">Snooze 5d</button>
+          <button class="btn-ghost btn-sm" onclick="openEditForm(${JSON.stringify(inv).replace(/"/g,'&quot;')})">Edit</button>
+          <button class="btn-ghost btn-sm" title="Remove" onclick="deleteInvoice('${inv.id}')">✕</button>
+        </div>
+      </td>
+    </tr>`,
+  }));
+
   const rows = invoices.length ? invoices.map(inv => `
     <tr>
       <td>
@@ -777,13 +950,14 @@ function renderConnected(data) {
       <td style="color:#888">${inv.invoice_number}</td>
       <td class="amount">${fmtMoney(inv.amount_due, inv.currency)}</td>
       <td class="${overdueClass(inv.days_overdue)}">${inv.days_overdue}d</td>
-      <td>${stageLabel(inv.chase_stage)}</td>
-      <td>${inv.contact_phone ? '💬' : ''}${inv.contact_email ? ' ✉️' : ''}</td>
+      <td class="col-stage">${stageLabel(inv.chase_stage)}</td>
+      <td class="col-channels">${inv.contact_phone ? '💬' : ''}${inv.contact_email ? ' ✉️' : ''}</td>
       <td>
         <div class="actions-cell">
           <button class="btn-primary btn-sm" onclick="openChase('${inv.id}')">Chase</button>
           <button class="btn-success btn-sm" onclick="markPaid('${inv.id}')">Paid</button>
           <button class="btn-ghost btn-sm" onclick="snooze('${inv.id}')">Snooze 5d</button>
+          <button class="btn-ghost btn-sm" onclick="openEditForm(${JSON.stringify(inv)})">Edit</button>
           <button class="btn-ghost btn-sm" title="Remove" onclick="deleteInvoice('${inv.id}')">✕</button>
         </div>
       </td>
@@ -826,14 +1000,22 @@ function renderConnected(data) {
     <div class="section-header">
       <h2>Overdue invoices</h2>
     </div>
-    <table>
+    <div class="search-bar">
+      <input id="invoice-search" placeholder="Search by client or invoice #..." oninput="filterInvoices()">
+      <select id="invoice-sort" onchange="filterInvoices()">
+        <option value="overdue">Sort: Most overdue</option>
+        <option value="amount">Sort: Highest amount</option>
+        <option value="name">Sort: Client name</option>
+      </select>
+    </div>
+    <table id="invoice-table">
       <thead>
         <tr>
           <th>Client</th><th>Invoice</th><th>Amount</th>
-          <th>Overdue</th><th>Chase stage</th><th>Channels</th><th>Actions</th>
+          <th>Overdue</th><th class="col-stage">Chase stage</th><th class="col-channels">Channels</th><th>Actions</th>
         </tr>
       </thead>
-      <tbody>${rows}</tbody>
+      <tbody id="invoice-tbody">${rows}</tbody>
     </table>
 
     <div id="analytics-section"></div>

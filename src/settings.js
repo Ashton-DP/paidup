@@ -15,6 +15,9 @@ const DEFAULTS = {
   payfast_merchant_id: '',
   payfast_merchant_key: '',
   payfast_passphrase: '',
+  send_hour: 8,
+  send_days: '1,2,3,4,5', // Mon–Fri (0=Sun)
+  digest_email: '1',       // '1' = enabled
 };
 
 async function getSetting(accountId, key) {

@@ -17,12 +17,25 @@ const { phoneKey, emailKey, isSuppressed, isChasingPaused, addSuppression } = re
 const { getCadence, getAppSettings } = require('./settings');
 const payfast = require('./payfast');
 
-async function runChaseForTenant(tenantRow) {
+async function runChaseForTenant(tenantRow, { checkTime = false } = {}) {
   const accountId = tenantRow.account_id;
   // Per-account kill switch — halt all outbound chasing for this account.
   if (await isChasingPaused(accountId)) {
     console.log('[chaser] chasing is paused — skipping run');
     return 0;
+  }
+
+  // Respect per-account send time preferences when running from the cron.
+  if (checkTime) {
+    const s = await getAppSettings(accountId);
+    const now = new Date();
+    const hour = now.getUTCHours();
+    const day  = now.getUTCDay();
+    const allowedDays = String(s.send_days || '1,2,3,4,5').split(',').map(Number);
+    const sendHour = Number(s.send_hour ?? 8);
+    if (hour !== sendHour || !allowedDays.includes(day)) {
+      return 0;
+    }
   }
 
   // Skip disputed invoices (a 'dispute' reply pauses them for human review).
@@ -112,10 +125,10 @@ async function logSend({ invoice, stage, channel, recipient, body }) {
   );
 }
 
-async function runChaseAll() {
+async function runChaseAll({ checkTime = false } = {}) {
   const tenants = await db.all(`SELECT * FROM tenants WHERE tokens IS NOT NULL`);
   for (const tenant of tenants) {
-    await runChaseForTenant(tenant);
+    await runChaseForTenant(tenant, { checkTime });
   }
 }
 
